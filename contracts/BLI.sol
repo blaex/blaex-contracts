@@ -3,33 +3,35 @@ pragma solidity 0.8.18;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IBLI} from "./interfaces/IBLI.sol";
+import {IERC20Rebasing} from "./interfaces/IERC20Rebasing.sol";
 
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import {YieldERC20} from "./YieldERC20.sol";
+import {PoolERC20} from "./core/PoolERC20.sol";
 import {Authorization} from "./securities/Authorization.sol";
 
-contract BLI is YieldERC20, IBLI, Authorization, ReentrancyGuard {
+contract BLI is IBLI, PoolERC20, Authorization, ReentrancyGuard {
     using Address for address;
     uint256 constant FACTOR = 10000;
 
     DailyStatistic dailyStatistic;
 
-    uint256 totalPooledToken;
     address feeReceiver;
     uint256 fee;
 
-    IERC20 internal immutable USDB;
+    IERC20 public constant USDB =
+        IERC20(0x4200000000000000000000000000000000000022);
 
     constructor(
         address _owner,
-        address _feeReceiver,
-        address _usdb
-    ) YieldERC20("Blaex Liquidity Index", "BLI") {
+        address _feeReceiver
+    ) PoolERC20("Blaex Liquidity Index", "BLI") {
+        IERC20Rebasing(address(USDB)).configure(
+            IERC20Rebasing.YieldMode.AUTOMATIC
+        );
         _setRole(_owner, CONTRACT_OWNER_ROLE, true);
         feeReceiver = _feeReceiver;
         fee = 0;
-        USDB = IERC20(_usdb);
     }
 
     // =====================================================================
@@ -38,24 +40,21 @@ contract BLI is YieldERC20, IBLI, Authorization, ReentrancyGuard {
     /**
      * @dev Process user deposit, mints liquid tokens and increase the pool buffer
      */
-    function deposit(uint256 amount) external nonReentrant {
-        USDB.transferFrom(msg.sender, address(this), amount);
+    function deposit(uint256 _amount) external nonReentrant {
+        uint256 feeAmount = (_amount * fee) / FACTOR;
+        uint256 depositAmount = _amount - feeAmount;
+        USDB.transferFrom(msg.sender, address(this), _amount);
+        USDB.transfer(feeReceiver, feeAmount);
 
-        uint256 sharesAmount = getSharesByPooledToken(amount);
+        uint256 sharesAmount = getSharesByPooledToken(depositAmount);
         if (sharesAmount == 0) {
-            sharesAmount = amount;
+            sharesAmount = depositAmount;
         }
 
-        totalPooledToken += amount;
         _mintShares(msg.sender, sharesAmount);
-        _updateDailyStatistic({
-            _depositAmount: amount,
-            _withdrawAmount: 0,
-            _feeAmount: 0,
-            _pnlAmount: 0,
-            _yieldAmount: 0
-        });
-        emit Deposit(msg.sender, amount);
+
+        emit Deposit(msg.sender, _amount);
+        emit ChargeFee(msg.sender, feeReceiver, feeAmount);
 
         _emitTransferAfterMintingShares(msg.sender, sharesAmount);
     }
@@ -65,23 +64,21 @@ contract BLI is YieldERC20, IBLI, Authorization, ReentrancyGuard {
      *
      * Emits `Withdraw` event
      */
-    function withdraw(uint256 amount) external nonReentrant {
-        require(amount > 0, "Invalid amount");
-        require(balanceOf(msg.sender) >= amount, "Not enough balance");
+    function withdraw(uint256 _amount) external nonReentrant {
+        require(_amount > 0, "Invalid amount");
+        require(balanceOf(msg.sender) >= _amount, "Not enough balance");
+
+        uint256 feeAmount = (_amount * fee) / FACTOR;
+        uint256 withdrawAmount = _amount - feeAmount;
+
+        USDB.transfer(msg.sender, withdrawAmount);
+        USDB.transfer(feeReceiver, feeAmount);
 
         //Burn
-        uint256 sharesAmount = getSharesByPooledToken(amount);
+        uint256 sharesAmount = getSharesByPooledToken(_amount);
         _burnShares(msg.sender, sharesAmount);
-        totalPooledToken -= amount;
 
-        _updateDailyStatistic({
-            _depositAmount: 0,
-            _withdrawAmount: amount,
-            _feeAmount: 0,
-            _pnlAmount: 0,
-            _yieldAmount: 0
-        });
-        emit Withdraw(msg.sender, amount);
+        emit Withdraw(msg.sender, _amount);
     }
 
     // =====================================================================
@@ -132,43 +129,35 @@ contract BLI is YieldERC20, IBLI, Authorization, ReentrancyGuard {
     }
 
     function _getTotalPooledToken() internal view override returns (uint256) {
-        return totalPooledToken;
+        return USDB.balanceOf(address(this));
     }
 
     function _updateDailyStatistic(
-        uint256 _depositAmount,
-        uint256 _withdrawAmount,
-        uint256 _feeAmount,
-        uint256 _pnlAmount,
-        uint256 _yieldAmount
+        int256 _pnl,
+        uint256 _realYield,
+        uint256 _nativeYield
     ) internal {
         uint256 currentDateTimestamp = (block.timestamp / 86400) * 86400;
         if (dailyStatistic.timestamp != currentDateTimestamp) {
             dailyStatistic = DailyStatistic({
                 timestamp: currentDateTimestamp,
-                depositAmount: 0,
-                withdrawAmount: 0,
-                feeAmount: 0,
-                pnlAmount: 0,
-                yieldAmount: 0
+                pnl: 0,
+                realYield: 0,
+                nativeYield: 0
             });
         }
 
-        dailyStatistic.depositAmount += _depositAmount;
-        dailyStatistic.withdrawAmount += _withdrawAmount;
-        dailyStatistic.feeAmount += _feeAmount;
-        dailyStatistic.pnlAmount += _pnlAmount;
-        dailyStatistic.yieldAmount += _yieldAmount;
+        dailyStatistic.pnl += _pnl;
+        dailyStatistic.realYield += _realYield;
+        dailyStatistic.nativeYield += _nativeYield;
 
         emit DailyStatisticUpdated({
             timestamp: dailyStatistic.timestamp,
-            depositAmount: dailyStatistic.depositAmount,
-            withdrawAmount: dailyStatistic.withdrawAmount,
-            feeAmount: dailyStatistic.feeAmount,
-            pnlAmount: dailyStatistic.pnlAmount,
-            yieldAmount: dailyStatistic.yieldAmount,
+            pnl: dailyStatistic.pnl,
+            realYield: dailyStatistic.realYield,
+            nativeYield: dailyStatistic.nativeYield,
             totalShares: _getTotalShares(),
-            totalPooledToken: totalPooledToken
+            totalPooledToken: _getTotalPooledToken()
         });
     }
 }

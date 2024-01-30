@@ -6,16 +6,16 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 interface IBLI is IERC20 {
     struct DailyStatistic {
         uint256 timestamp;
-        uint256 depositAmount;
-        uint256 withdrawAmount;
-        uint256 feeAmount;
-        uint256 pnlAmount;
-        uint256 yieldAmount;
+        int256 pnl;
+        uint256 realYield;
+        uint256 nativeYield;
     }
 
     event Deposit(address sender, uint256 value);
 
     event Withdraw(address receiver, uint256 value);
+
+    event ChargeFee(address sender, address receiver, uint256 value);
 
     event UpdatedFee(uint256 fee);
 
@@ -23,11 +23,9 @@ interface IBLI is IERC20 {
 
     event DailyStatisticUpdated(
         uint256 timestamp,
-        uint256 depositAmount,
-        uint256 withdrawAmount,
-        uint256 feeAmount,
-        uint256 pnlAmount,
-        uint256 yieldAmount,
+        int256 pnl,
+        uint256 realYield,
+        uint256 nativeYield,
         uint256 totalShares,
         uint256 totalPooledToken
     );

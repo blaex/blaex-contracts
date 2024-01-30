@@ -1,8 +1,8 @@
 {
   "name": "blaex-contracts",
   "scripts": {
-    "deploy:snx:testnet": "npx hardhat run --network testnet scripts/build/deploySNX.ts",
-    "deploy:snx:mainnet": "npx hardhat run --network mainnet scripts/build/deploySNX.ts",
+    "deploy:testnet": "npx hardhat run --network testnet scripts/build/deploy.ts",
+    "deploy:mainnet": "npx hardhat run --network mainnet scripts/build/deploy.ts",
     "compile": "hardhat compile",
     "test": "hardhat test",
     "watch": "hardhat watch"

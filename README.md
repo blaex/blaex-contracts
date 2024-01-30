@@ -7,7 +7,7 @@ Try running some of the following tasks:
 ```shell
 npm run compile
 npm run test
-npm run deploy:snx:testnet
+npm run deploy:testnet
 npx hardhat run --network sepolia scripts/faucets/mintAndBridgeUSDB.ts
 npx hardhat run --network sepolia scripts/faucets/bridgeETH.ts
 ```
