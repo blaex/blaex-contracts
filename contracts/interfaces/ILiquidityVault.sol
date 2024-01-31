@@ -1,38 +1,40 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.18;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
-interface IBLI is IERC20 {
+interface ILiquidityVault {
     struct DailyStatistic {
         uint256 timestamp;
         int256 pnl;
-        uint256 realYield;
-        uint256 nativeYield;
+        uint256 yield;
     }
 
     event Deposit(address sender, uint256 value);
 
     event Withdraw(address receiver, uint256 value);
 
-    event ChargeFee(address sender, address receiver, uint256 value);
+    event FeeCharged(address sender, address receiver, uint256 value);
 
-    event UpdatedFee(uint256 fee);
+    event TradeSettled(int256 pnl, uint256 fees);
 
-    event UpdatedFeeReceiver(address feeReceiver);
+    event FeeUpdated(uint256 fee);
+
+    event FeeReceiverUpdated(address feeReceiver);
+
+    event PerpsVaultSetted(address perpsVault);
 
     event DailyStatisticUpdated(
         uint256 timestamp,
         int256 pnl,
-        uint256 realYield,
-        uint256 nativeYield,
+        uint256 yield,
         uint256 totalShares,
         uint256 totalPooledToken
     );
 
-    function deposit(uint256 amount) external;
+    function deposit(uint256 _amount) external;
 
-    function withdraw(uint256 amount) external;
+    function withdraw(uint256 _amount) external;
+
+    function settleTrade(int256 _pnl, uint256 _fees) external;
 
     function getFee() external returns (uint256);
 

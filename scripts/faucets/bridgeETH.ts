@@ -7,10 +7,10 @@ async function main() {
   // Wallet setup
   const [wallet1] = await ethers.getSigners();
 
-  // Transaction to send 0.1 Sepolia ETH
+  // Transaction to send 0.2 Sepolia ETH
   const payload = {
     to: BRIDGE,
-    value: ethers.utils.parseEther("0.1"),
+    value: ethers.utils.parseEther("0.2"),
   };
 
   const tx = await wallet1.sendTransaction(payload);
