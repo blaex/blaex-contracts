@@ -11,13 +11,20 @@ interface IPerpsMarket {
     }
 
     struct Market {
-        address token;
+        uint256 id;
+        string symbol;
+        uint256 size;
+        int256 skew;
+        int256 lastFundingRate;
+        int256 lastFundingValue;
+        uint256 lastFundingTime;
+        int256 debtCorrectionAccumulator;
         bool enable;
     }
 
     struct Position {
         address account;
-        address market;
+        uint256 market;
         address collateralToken;
         uint256 id;
         uint256 sizeInUsd;
@@ -30,8 +37,7 @@ interface IPerpsMarket {
 
     struct Order {
         address account;
-        address receiver;
-        address market;
+        uint256 market;
         address collateralToken;
         uint256 id;
         OrderType orderType;
@@ -48,11 +54,16 @@ interface IPerpsMarket {
         bool isCanceled;
     }
 
+    struct CreateMarketParams {
+        uint256 id;
+        string symbol;
+    }
+
     struct CreateOrderParams {
         address receiver;
         address callbackContract;
         address uiFeeReceiver;
-        address market;
+        uint256 market;
         address collateralToken;
         uint256 sizeDeltaUsd;
         uint256 collateralDeltaUsd;
@@ -81,12 +92,12 @@ interface IPerpsMarket {
         ExecuteOrderParams memory params
     ) external;
 
-    event SubmittedOrder(
+    event OrderSubmitted(
         uint256 orderId,
         OrderType orderType,
         bool isLong,
         address account,
-        address market,
+        uint256 market,
         address collateralToken,
         uint256 collateralDeltaUsd,
         uint256 sizeDeltaUsd,
@@ -95,21 +106,21 @@ interface IPerpsMarket {
         uint256 executionFee
     );
 
-    event CanceledOrder(uint256 orderId);
+    event OrderCanceled(uint256 orderId);
 
-    event ExecuteOrder(
+    event OrderExecuted(
         uint256 orderId,
         uint256 executePrice,
         uint256 executeTime
     );
 
-    event PositionModify(
+    event PositionModified(
         uint256 positionId,
         address indexToken,
         address sizeInUsdl,
         address sizeDeltaInUsd,
         address collateralInUsd,
         address collateralDeltaInUsd,
-        bool isLong,
+        bool isLong
     );
 }

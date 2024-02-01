@@ -3,14 +3,15 @@ pragma solidity 0.8.18;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IPerpsVault} from "../interfaces/IPerpsVault.sol";
+import {Authorization} from "../securities/Authorization.sol";
 import "../interfaces/IPerpsMarket.sol";
 
-contract PerpsMarket is IPerpsMarket {
+contract PerpsMarket is IPerpsMarket, Authorization {
     IERC20 public constant USDB =
         IERC20(0x4200000000000000000000000000000000000022);
     IPerpsVault perpsVault;
     bool enableExchange;
-    mapping(address => Market) market;
+    mapping(uint256 => Market) markets;
     uint256 protocolFee = 500;
     uint256 constant FACTOR = 10000;
 
@@ -22,7 +23,9 @@ contract PerpsMarket is IPerpsMarket {
     mapping(uint256 => Position) positions;
     mapping(bytes32 => uint256) openingPositionFlag;
 
-    constructor() {}
+    constructor(address _owner) {
+        _setRole(_owner, CONTRACT_OWNER_ROLE, true);
+    }
 
     modifier whenEnableExchange() {
         require(enableExchange, "Exchange is disabled");
@@ -43,11 +46,22 @@ contract PerpsMarket is IPerpsMarket {
         USDB.transfer(address(perpsVault), _amount);
     }
 
+    function createMarket(
+        CreateMarketParams calldata params
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
+        require(params.id != 0, "Require id");
+        Market storage market = markets[params.id];
+        require(market.id == 0, "Market is exist");
+        market.id = params.id;
+        market.symbol = params.symbol;
+        market.enable = true;
+    }
+
     function createOrder(
         CreateOrderParams calldata params
     ) external payable whenEnableExchange {
         require(
-            market[params.market].enable,
+            markets[params.market].enable,
             "Market not available to trading"
         );
         require(params.receiver != address(0), "Invalid receiver");
@@ -69,7 +83,6 @@ contract PerpsMarket is IPerpsMarket {
         Order memory order;
         //Addresses
         order.account = msg.sender;
-        order.receiver = params.receiver;
         order.market = params.market;
         order.collateralToken = params.collateralToken;
         //Numbers
@@ -88,7 +101,7 @@ contract PerpsMarket is IPerpsMarket {
         orders[order.id] = order;
         orderId += 1;
 
-        emit SubmittedOrder(
+        emit OrderSubmitted(
             order.id,
             order.orderType,
             order.isLong,
@@ -111,7 +124,7 @@ contract PerpsMarket is IPerpsMarket {
         );
 
         orders[id].isCanceled = true;
-        emit CanceledOrder(id);
+        emit OrderCanceled(id);
     }
 
     function executeOrder(
@@ -140,7 +153,7 @@ contract PerpsMarket is IPerpsMarket {
             position = decreasePosition(positionKey, order, 0, 0);
         }
 
-        emit ExecuteOrder(id, 0, block.timestamp);
+        emit OrderExecuted(id, 0, block.timestamp);
     }
 
     function increasePosition(
