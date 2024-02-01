@@ -63,7 +63,6 @@ interface IPerpsMarket {
         uint256 minOutputAmount;
         OrderType orderType;
         bool isLong;
-        bytes32 referralCode;
     }
 
     struct ExecuteOrderParams {
@@ -73,9 +72,7 @@ interface IPerpsMarket {
         address keeper;
     }
 
-    function createOrder(
-        CreateOrderParams calldata params
-    ) external returns (uint256);
+    function createOrder(CreateOrderParams calldata params) external payable;
 
     function cancelOrder(uint256 id) external;
 
@@ -84,9 +81,35 @@ interface IPerpsMarket {
         ExecuteOrderParams memory params
     ) external;
 
-    event CreateOrder();
+    event SubmittedOrder(
+        uint256 orderId,
+        OrderType orderType,
+        bool isLong,
+        address account,
+        address market,
+        address collateralToken,
+        uint256 collateralDeltaUsd,
+        uint256 sizeDeltaUsd,
+        uint256 triggerPrice,
+        uint256 acceptablePrice,
+        uint256 executionFee
+    );
 
-    event CloseOrder();
+    event CanceledOrder(uint256 orderId);
 
-    event ExecuteOrder();
+    event ExecuteOrder(
+        uint256 orderId,
+        uint256 executePrice,
+        uint256 executeTime
+    );
+
+    event PositionModify(
+        uint256 positionId,
+        address indexToken,
+        address sizeInUsdl,
+        address sizeDeltaInUsd,
+        address collateralInUsd,
+        address collateralDeltaInUsd,
+        bool isLong,
+    );
 }

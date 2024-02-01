@@ -45,7 +45,7 @@ contract PerpsMarket is IPerpsMarket {
 
     function createOrder(
         CreateOrderParams calldata params
-    ) external whenEnableExchange returns (uint256) {
+    ) external payable whenEnableExchange {
         require(
             market[params.market].enable,
             "Market not available to trading"
@@ -88,16 +88,30 @@ contract PerpsMarket is IPerpsMarket {
         orders[order.id] = order;
         orderId += 1;
 
-        //TODO: Emit event
-
-        return order.id;
+        emit SubmittedOrder(
+            order.id,
+            order.orderType,
+            order.isLong,
+            order.account,
+            order.market,
+            order.collateralToken,
+            order.collateralDeltaUsd,
+            order.sizeDeltaUsd,
+            order.triggerPrice,
+            order.acceptablePrice,
+            order.executionFee
+        );
     }
 
     function cancelOrder(uint256 id) external whenEnableExchange {
-        verifyOrder(id);
-        orders[id].isCanceled = true;
+        Order memory order = verifyOrder(id);
+        require(
+            order.account == msg.sender,
+            "Unauthorize to access this order"
+        );
 
-        //TODO: Emit event
+        orders[id].isCanceled = true;
+        emit CanceledOrder(id);
     }
 
     function executeOrder(
@@ -113,19 +127,20 @@ contract PerpsMarket is IPerpsMarket {
             abi.encode(order.account, order.market, order.isLong)
         );
 
+        Position memory position;
         if (
             order.orderType == OrderType.MarketIncrease ||
             order.orderType == OrderType.LimitIncrease
         ) {
-            increasePosition(positionKey, order, 0, 0);
+            position = increasePosition(positionKey, order, 0, 0);
         } else if (
             order.orderType == OrderType.MarketDecrease ||
             order.orderType == OrderType.LimitDecrease
         ) {
-            decreasePosition(positionKey, order, 0, 0);
+            position = decreasePosition(positionKey, order, 0, 0);
         }
 
-        //TODO: Emit event
+        emit ExecuteOrder(id, 0, block.timestamp);
     }
 
     function increasePosition(
@@ -133,7 +148,7 @@ contract PerpsMarket is IPerpsMarket {
         Order memory order,
         uint256 executionPrice,
         uint256 executionPriceDecimal
-    ) internal {
+    ) internal returns (Position memory) {
         Position memory position = positions[openingPositionFlag[positionKey]];
 
         USDB.transferFrom(
@@ -173,6 +188,8 @@ contract PerpsMarket is IPerpsMarket {
 
         uint256 fees = (order.sizeDeltaUsd * protocolFee) / FACTOR;
         perpsVault.settleTrade(order.account, 0, fees);
+
+        return position;
     }
 
     function decreasePosition(
@@ -180,7 +197,7 @@ contract PerpsMarket is IPerpsMarket {
         Order memory order,
         uint256 executionPrice,
         uint256 executionPriceDecimal
-    ) internal {
+    ) internal returns (Position memory) {
         Position memory position = positions[openingPositionFlag[positionKey]];
 
         uint256 decreaseSizeDeltaUsd = order.sizeDeltaUsd > position.sizeInUsd
@@ -226,6 +243,8 @@ contract PerpsMarket is IPerpsMarket {
         perpsVault.settleTrade(order.account, pnl, fees);
         perpsVault.withdrawCollateral(order.account, receivedAmount);
         USDB.transfer(order.account, receivedAmount);
+
+        return position;
     }
 
     function verifyOrder(uint256 id) internal returns (Order memory) {
