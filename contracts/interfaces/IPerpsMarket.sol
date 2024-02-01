@@ -19,6 +19,7 @@ interface IPerpsMarket {
         int256 lastFundingValue;
         uint256 lastFundingTime;
         int256 debtCorrectionAccumulator;
+        bytes32 priceFeedId;
         bool enable;
     }
 
@@ -57,6 +58,7 @@ interface IPerpsMarket {
     struct CreateMarketParams {
         uint256 id;
         string symbol;
+        bytes32 priceFeedId;
     }
 
     struct CreateOrderParams {

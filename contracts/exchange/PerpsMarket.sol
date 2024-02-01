@@ -2,14 +2,19 @@
 pragma solidity 0.8.18;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IPyth} from "@pythnetwork/pyth-sdk-solidity/IPyth.sol";
+import {PythStructs} from "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
 import {IPerpsVault} from "../interfaces/IPerpsVault.sol";
+
 import {Authorization} from "../securities/Authorization.sol";
 import "../interfaces/IPerpsMarket.sol";
 
 contract PerpsMarket is IPerpsMarket, Authorization {
     IERC20 public constant USDB =
         IERC20(0x4200000000000000000000000000000000000022);
+    IPyth pyth;
     IPerpsVault perpsVault;
+
     bool enableExchange;
     mapping(uint256 => Market) markets;
     uint256 protocolFee = 500;
@@ -23,8 +28,10 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     mapping(uint256 => Position) positions;
     mapping(bytes32 => uint256) openingPositionFlag;
 
-    constructor(address _owner) {
+    constructor(address _owner, address _perpsVault, address _pyth) {
         _setRole(_owner, CONTRACT_OWNER_ROLE, true);
+        perpsVault = IPerpsVault(_perpsVault);
+        pyth = IPyth(_pyth);
     }
 
     modifier whenEnableExchange() {
@@ -38,6 +45,12 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             "PerpsMarket: Only PerpsVault"
         );
         _;
+    }
+
+    function indexPrice(uint256 marketId) public view returns (uint256) {
+        Market memory market = markets[marketId];
+        require(market.priceFeedId != "0", "Price Feed not set");
+        return _convertToUint(pyth.getPrice(market.priceFeedId), 18);
     }
 
     function depositCollateralCallback(
@@ -54,6 +67,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         require(market.id == 0, "Market is exist");
         market.id = params.id;
         market.symbol = params.symbol;
+        market.priceFeedId = params.priceFeedId;
         market.enable = true;
     }
 
@@ -242,8 +256,11 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         if (position.sizeInUsd == 0) {
             position.isClose = true;
         }
-
-        positions[openingPositionFlag[positionKey]] = position;
+        uint256 flag;
+        {
+            flag = openingPositionFlag[positionKey];
+            positions[flag] = position;
+        }
 
         //TODO: transfer collateral & pnl
         uint256 fees = (order.sizeDeltaUsd * protocolFee) / FACTOR;
@@ -268,6 +285,27 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         require(!order.isCanceled, "Order already canceled");
 
         return order;
+    }
+
+    function _convertToUint(
+        PythStructs.Price memory price,
+        uint8 targetDecimals
+    ) private pure returns (uint256) {
+        if (price.price < 0 || price.expo > 0 || price.expo < -255) {
+            revert();
+        }
+
+        uint8 priceDecimals = uint8(uint32(-1 * price.expo));
+
+        if (targetDecimals >= priceDecimals) {
+            return
+                uint(uint64(price.price)) *
+                10 ** uint32(targetDecimals - priceDecimals);
+        } else {
+            return
+                uint(uint64(price.price)) /
+                10 ** uint32(priceDecimals - targetDecimals);
+        }
     }
 
     function _abs(int256 x) internal pure returns (uint256 z) {
