@@ -66,5 +66,3 @@ async function main() {
 }
 
 main();
-
-966666666666666667;

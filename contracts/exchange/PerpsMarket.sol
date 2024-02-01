@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.18;
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IPerpsVault} from "../interfaces/IPerpsVault.sol";
 import "../interfaces/IPerpsMarket.sol";
 
 contract PerpsMarket is IPerpsMarket {
+    IERC20 public constant USDB =
+        IERC20(0x4200000000000000000000000000000000000022);
+    IPerpsVault perpsVault;
     bool enableExchange;
     mapping(address => Market) market;
+    uint256 protocolFee = 500;
+    uint256 constant FACTOR = 10000;
+
     address feeReceiver;
 
     uint256 orderId = 1;
@@ -21,9 +29,23 @@ contract PerpsMarket is IPerpsMarket {
         _;
     }
 
+    modifier onlyPerpsVault() {
+        require(
+            address(perpsVault) == msg.sender,
+            "PerpsMarket: Only PerpsVault"
+        );
+        _;
+    }
+
+    function depositCollateralCallback(
+        uint256 _amount
+    ) external onlyPerpsVault {
+        USDB.transfer(address(perpsVault), _amount);
+    }
+
     function createOrder(
         CreateOrderParams calldata params
-    ) external payable whenEnableExchange returns (uint256) {
+    ) external whenEnableExchange returns (uint256) {
         require(
             market[params.market].enable,
             "Market not available to trading"
@@ -71,7 +93,7 @@ contract PerpsMarket is IPerpsMarket {
         return order.id;
     }
 
-    function cancelOrder(uint256 id) external payable whenEnableExchange {
+    function cancelOrder(uint256 id) external whenEnableExchange {
         verifyOrder(id);
         orders[id].isCanceled = true;
 
@@ -88,7 +110,7 @@ contract PerpsMarket is IPerpsMarket {
         //TODO: validate price and block
 
         bytes32 positionKey = keccak256(
-            abi.encode(msg.sender, order.market, order.isLong)
+            abi.encode(order.account, order.market, order.isLong)
         );
 
         if (
@@ -114,10 +136,17 @@ contract PerpsMarket is IPerpsMarket {
     ) internal {
         Position memory position = positions[openingPositionFlag[positionKey]];
 
+        USDB.transferFrom(
+            order.account,
+            address(this),
+            order.collateralDeltaUsd
+        );
+        perpsVault.depositCollateral(order.account, order.collateralDeltaUsd);
+
         bool isNew = position.sizeInUsd == 0 && !position.isClose;
         if (isNew) {
             //Addresses
-            position.account = msg.sender;
+            position.account = order.account;
             position.market = order.market;
             position.collateralToken = order.collateralToken;
             //Numbers
@@ -141,6 +170,9 @@ contract PerpsMarket is IPerpsMarket {
         }
 
         positions[openingPositionFlag[positionKey]] = position;
+
+        uint256 fees = (order.sizeDeltaUsd * protocolFee) / FACTOR;
+        perpsVault.settleTrade(order.account, 0, fees);
     }
 
     function decreasePosition(
@@ -184,6 +216,16 @@ contract PerpsMarket is IPerpsMarket {
         positions[openingPositionFlag[positionKey]] = position;
 
         //TODO: transfer collateral & pnl
+        uint256 fees = (order.sizeDeltaUsd * protocolFee) / FACTOR;
+        uint256 receivedAmount = order.collateralDeltaUsd - fees;
+        if (pnl >= 0) {
+            receivedAmount += _abs(pnl);
+        } else {
+            receivedAmount -= _abs(pnl);
+        }
+        perpsVault.settleTrade(order.account, pnl, fees);
+        perpsVault.withdrawCollateral(order.account, receivedAmount);
+        USDB.transfer(order.account, receivedAmount);
     }
 
     function verifyOrder(uint256 id) internal returns (Order memory) {
@@ -194,5 +236,12 @@ contract PerpsMarket is IPerpsMarket {
         require(!order.isCanceled, "Order already canceled");
 
         return order;
+    }
+
+    function _abs(int256 x) internal pure returns (uint256 z) {
+        assembly {
+            let mask := sub(0, shr(255, x))
+            z := xor(mask, add(mask, x))
+        }
     }
 }

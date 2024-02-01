@@ -115,12 +115,12 @@ contract PerpsVault is
     ) external onlyPerpsMarket {
         uint256 amount = _abs(_pnl - int256(_fees));
         uint256 sharesAmount = getSharesByPooledToken(amount);
-        if (_pnl > 0) {
+        if (sharesAmount > 0) {
             if (sharesAmount == 0) {
                 sharesAmount = amount;
             }
             _mintShares(_account, sharesAmount);
-        } else if (_pnl < 0) {
+        } else if (sharesAmount < 0) {
             _burnShares(_account, sharesAmount);
         }
         liquidityVault.settleTrade(_pnl, _fees);

@@ -75,9 +75,9 @@ interface IPerpsMarket {
 
     function createOrder(
         CreateOrderParams calldata params
-    ) external payable returns (uint256);
+    ) external returns (uint256);
 
-    function cancelOrder(uint256 id) external payable;
+    function cancelOrder(uint256 id) external;
 
     function executeOrder(
         uint256 id,
