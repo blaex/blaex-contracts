@@ -106,6 +106,12 @@ interface IPerpsMarket {
         address user
     ) external view returns (Position[] memory);
 
+    function setKeeperFee(uint256 _keeperFee) external;
+
+    function setProtocolFee(uint256 _protocolFee) external;
+
+    function setEnableExchange(bool _enableExchange) external;
+
     event OrderSubmitted(
         uint256 orderId,
         OrderType orderType,

@@ -15,13 +15,13 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     IPyth pyth;
     IPerpsVault perpsVault;
 
-    bool enableExchange;
+    bool public enableExchange;
+    uint256 public protocolFee = 500;
+    uint256 public constant FACTOR = 10000;
     mapping(uint256 => Market) markets;
-    uint256 protocolFee = 500;
-    uint256 constant FACTOR = 10000;
 
     address feeReceiver;
-    uint256 keeperFee;
+    uint256 public keeperFee;
 
     uint256 orderId = 1;
     uint256 positionId = 1;
@@ -303,6 +303,24 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         }
 
         return _orders;
+    }
+
+    function setKeeperFee(
+        uint256 _keeperFee
+    ) external auth(OPERATOR_ROLE, msg.sender) {
+        keeperFee = _keeperFee;
+    }
+
+    function setProtocolFee(
+        uint256 _protocolFee
+    ) external auth(OPERATOR_ROLE, msg.sender) {
+        protocolFee = _protocolFee;
+    }
+
+    function setEnableExchange(
+        bool _enableExchange
+    ) external auth(OPERATOR_ROLE, msg.sender) {
+        enableExchange = _enableExchange;
     }
 
     function getUserOpeningPositions(
