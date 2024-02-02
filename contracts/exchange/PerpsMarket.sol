@@ -349,7 +349,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         enableExchange = _enableExchange;
     }
 
-    function getOpeningPositions(
+    function getOpenPositions(
         address acccount
     ) external view returns (Position[] memory) {
         uint256[] memory positionIds = openPositions[acccount];
