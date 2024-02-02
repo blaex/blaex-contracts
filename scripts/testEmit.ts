@@ -10,7 +10,7 @@ async function main() {
   const USDB = (network.config as BlaexNetworkConfig).USDB;
 
   const PerpsMarketContract = new ethers.Contract(
-    "0xD4c8b3710d399c1810e48365727FD28bD4ec0314",
+    "0xAE40836Be001c2a8D789B672C6DbE3b0B7beE3C4",
     MOCK_PERPS_MARKET_ABI,
     wallet1 as any
   );
@@ -52,7 +52,6 @@ async function main() {
   //   1,
   // );
   // console.log("tx2", tx2);
-}
 }
 
 main();
