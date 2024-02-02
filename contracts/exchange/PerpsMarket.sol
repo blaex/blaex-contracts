@@ -143,7 +143,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
 
         orders[id].isCanceled = true;
         _removeFromArrayByValue(accountOpenOrders[order.account], id);
-        emit OrderCanceled(id);
+        emit OrderCanceled(id, block.timestamp);
     }
 
     function executeOrder(
@@ -178,6 +178,15 @@ contract PerpsMarket is IPerpsMarket, Authorization {
 
         Funding.recomputeFunding(markets[order.market], currentPrice);
 
+        emit PositionModified(
+            position.id,
+            order.market,
+            position.sizeInUsd,
+            order.sizeDeltaUsd,
+            position.collateralInUsd,
+            order.collateralDeltaUsd,
+            position.isLong
+        );
         emit OrderExecuted(id, 0, block.timestamp);
     }
 
