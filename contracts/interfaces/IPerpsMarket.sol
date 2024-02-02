@@ -46,7 +46,7 @@ interface IPerpsMarket {
         uint256 collateralDeltaUsd;
         uint256 triggerPrice;
         uint256 acceptablePrice;
-        uint256 executionFee;
+        uint256 keeperFee;
         uint256 callbackGasLimit;
         uint256 minOutputAmount;
         uint256 updatedAtBlock;
@@ -94,6 +94,18 @@ interface IPerpsMarket {
         ExecuteOrderParams memory params
     ) external;
 
+    function getOrder(uint256 id) external view returns (Order memory);
+
+    function getPosition(uint256 id) external view returns (Position memory);
+
+    function getUserOpeningOrders(
+        address user
+    ) external view returns (Order[] memory);
+
+    function getUserOpeningPositions(
+        address user
+    ) external view returns (Position[] memory);
+
     event OrderSubmitted(
         uint256 orderId,
         OrderType orderType,
@@ -105,7 +117,7 @@ interface IPerpsMarket {
         uint256 sizeDeltaUsd,
         uint256 triggerPrice,
         uint256 acceptablePrice,
-        uint256 executionFee
+        uint256 keeperFee
     );
 
     event OrderCanceled(uint256 orderId);

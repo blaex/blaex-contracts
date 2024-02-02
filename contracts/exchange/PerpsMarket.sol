@@ -21,11 +21,14 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     uint256 constant FACTOR = 10000;
 
     address feeReceiver;
+    uint256 keeperFee;
 
     uint256 orderId = 1;
     uint256 positionId = 1;
     mapping(uint256 => Order) orders;
     mapping(uint256 => Position) positions;
+    mapping(address => uint256[]) userOpeningOrders;
+    mapping(address => uint256[]) userOpeningPositions;
     mapping(bytes32 => uint256) openingPositionFlag;
 
     constructor(address _owner, address _perpsVault, address _pyth) {
@@ -79,40 +82,39 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             "Market not available to trading"
         );
         require(params.receiver != address(0), "Invalid receiver");
+        require(
+            params.collateralDeltaUsd > keeperFee,
+            "Collateral amout must be greater than keeper fee"
+        );
 
         if (
             params.orderType == OrderType.MarketIncrease ||
-            params.orderType == OrderType.LimitIncrease
-        ) {
-            //TODO: Charge Fee
-        } else if (
+            params.orderType == OrderType.LimitIncrease ||
             params.orderType == OrderType.MarketDecrease ||
             params.orderType == OrderType.LimitDecrease
         ) {
-            //TODO: Charge Fee
+            USDB.transferFrom(msg.sender, address(this), keeperFee);
         } else {
             revert("Order type is not supported");
         }
 
         Order memory order;
-        //Addresses
         order.account = msg.sender;
         order.market = params.market;
         order.collateralToken = params.collateralToken;
-        //Numbers
         order.orderType = params.orderType;
         order.sizeDeltaUsd = params.sizeDeltaUsd;
-        order.collateralDeltaUsd = params.collateralDeltaUsd;
+        order.collateralDeltaUsd = params.collateralDeltaUsd - keeperFee;
         order.triggerPrice = params.triggerPrice;
         order.acceptablePrice = params.acceptablePrice;
-        order.executionFee = params.executionFee;
+        order.keeperFee = keeperFee;
         order.callbackGasLimit = params.callbackGasLimit;
         order.minOutputAmount = params.minOutputAmount;
-        //Flags
         order.isLong = params.isLong;
-        //Put
         order.id = orderId;
+
         orders[order.id] = order;
+        userOpeningOrders[msg.sender].push(order.id);
         orderId += 1;
 
         emit OrderSubmitted(
@@ -126,7 +128,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             order.sizeDeltaUsd,
             order.triggerPrice,
             order.acceptablePrice,
-            order.executionFee
+            order.keeperFee
         );
     }
 
@@ -138,6 +140,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         );
 
         orders[id].isCanceled = true;
+        removeFromArrayByValue(userOpeningOrders[order.account], id);
         emit OrderCanceled(id);
     }
 
@@ -149,6 +152,9 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         orders[id].isFilled = true;
 
         //TODO: validate price and block
+
+        //Transfer fee
+        USDB.transferFrom(address(this), msg.sender, order.keeperFee);
 
         bytes32 positionKey = keccak256(
             abi.encode(order.account, order.market, order.isLong)
@@ -187,21 +193,19 @@ contract PerpsMarket is IPerpsMarket, Authorization {
 
         bool isNew = position.sizeInUsd == 0 && !position.isClose;
         if (isNew) {
-            //Addresses
             position.account = order.account;
             position.market = order.market;
             position.collateralToken = order.collateralToken;
-            //Numbers
             position.sizeInUsd = order.sizeDeltaUsd;
             position.sizeInToken =
                 (order.sizeDeltaUsd * executionPriceDecimal) /
                 executionPrice;
             position.collateralInUsd = order.collateralDeltaUsd;
-            //Flags
             position.isLong = order.isLong;
-            //Put
             position.id = positionId;
+
             positions[position.id] = position;
+            userOpeningPositions[position.account].push(position.id);
             positionId += 1;
         } else {
             position.sizeInUsd += order.sizeDeltaUsd;
@@ -255,6 +259,10 @@ contract PerpsMarket is IPerpsMarket, Authorization {
 
         if (position.sizeInUsd == 0) {
             position.isClose = true;
+            removeFromArrayByValue(
+                userOpeningPositions[position.account],
+                position.id
+            );
         }
         uint256 flag;
         {
@@ -262,7 +270,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             positions[flag] = position;
         }
 
-        //TODO: transfer collateral & pnl
+        //transfer collateral & pnl
         uint256 fees = (order.sizeDeltaUsd * protocolFee) / FACTOR;
         uint256 receivedAmount = order.collateralDeltaUsd - fees;
         if (pnl >= 0) {
@@ -277,6 +285,38 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         return position;
     }
 
+    function getOrder(uint256 id) external view returns (Order memory) {
+        return orders[id];
+    }
+
+    function getPosition(uint256 id) external view returns (Position memory) {
+        return positions[id];
+    }
+
+    function getUserOpeningOrders(
+        address user
+    ) external view returns (Order[] memory) {
+        uint256[] memory orderIds = userOpeningOrders[user];
+        Order[] memory _orders = new Order[](orderIds.length);
+        for (uint256 i = 0; i < orderIds.length; i++) {
+            _orders[i] = orders[orderIds[i]];
+        }
+
+        return _orders;
+    }
+
+    function getUserOpeningPositions(
+        address user
+    ) external view returns (Position[] memory) {
+        uint256[] memory positionIds = userOpeningPositions[user];
+        Position[] memory _positions = new Position[](positionIds.length);
+        for (uint256 i = 0; i < positionIds.length; i++) {
+            _positions[i] = positions[positionIds[i]];
+        }
+
+        return _positions;
+    }
+
     function verifyOrder(uint256 id) internal returns (Order memory) {
         require(id > 0 && id < orderId, "Invalid order id");
 
@@ -285,6 +325,26 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         require(!order.isCanceled, "Order already canceled");
 
         return order;
+    }
+
+    function removeFromArrayByValue(
+        uint256[] storage arr,
+        uint256 value
+    ) internal {
+        bool found = false;
+        for (uint i = 0; i < arr.length - 1; i++) {
+            if (!found && arr[i] == value) {
+                found = true;
+            }
+
+            if (found) {
+                arr[i] = arr[i + 1];
+            }
+        }
+
+        if (found || arr[arr.length - 1] == value) {
+            arr.pop();
+        }
     }
 
     function _convertToUint(
