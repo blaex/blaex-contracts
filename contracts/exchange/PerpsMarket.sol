@@ -7,6 +7,8 @@ import {PythStructs} from "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
 import {IPerpsVault} from "../interfaces/IPerpsVault.sol";
 
 import {Authorization} from "../securities/Authorization.sol";
+import {Funding} from "../utils/Funding.sol";
+import {Math} from "../utils/Math.sol";
 import "../interfaces/IPerpsMarket.sol";
 
 contract PerpsMarket is IPerpsMarket, Authorization {
@@ -15,7 +17,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     IPyth pyth;
     IPerpsVault perpsVault;
 
-    bool public enableExchange;
+    bool public enableExchange = true;
     uint256 public protocolFee = 500;
     uint256 public constant FACTOR = 10000;
     mapping(uint256 => Market) markets;
@@ -27,8 +29,8 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     uint256 positionId = 1;
     mapping(uint256 => Order) orders;
     mapping(uint256 => Position) positions;
-    mapping(address => uint256[]) userOpeningOrders;
-    mapping(address => uint256[]) userOpeningPositions;
+    mapping(address => uint256[]) accountOpenOrders;
+    mapping(address => uint256[]) accountOpenPositions;
     mapping(bytes32 => uint256) openingPositionFlag;
 
     constructor(address _owner, address _perpsVault, address _pyth) {
@@ -114,7 +116,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         order.id = orderId;
 
         orders[order.id] = order;
-        userOpeningOrders[msg.sender].push(order.id);
+        accountOpenOrders[msg.sender].push(order.id);
         orderId += 1;
 
         emit OrderSubmitted(
@@ -140,7 +142,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         );
 
         orders[id].isCanceled = true;
-        removeFromArrayByValue(userOpeningOrders[order.account], id);
+        _removeFromArrayByValue(accountOpenOrders[order.account], id);
         emit OrderCanceled(id);
     }
 
@@ -152,6 +154,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         orders[id].isFilled = true;
 
         //TODO: validate price and block
+        uint256 currentPrice = indexPrice(order.market);
 
         //Transfer fee
         USDB.transferFrom(address(this), msg.sender, order.keeperFee);
@@ -165,13 +168,15 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             order.orderType == OrderType.MarketIncrease ||
             order.orderType == OrderType.LimitIncrease
         ) {
-            position = increasePosition(positionKey, order, 0, 0);
+            position = increasePosition(positionKey, order, currentPrice);
         } else if (
             order.orderType == OrderType.MarketDecrease ||
             order.orderType == OrderType.LimitDecrease
         ) {
-            position = decreasePosition(positionKey, order, 0, 0);
+            position = decreasePosition(positionKey, order, currentPrice);
         }
+
+        Funding.recomputeFunding(markets[order.market], currentPrice);
 
         emit OrderExecuted(id, 0, block.timestamp);
     }
@@ -179,8 +184,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     function increasePosition(
         bytes32 positionKey,
         Order memory order,
-        uint256 executionPrice,
-        uint256 executionPriceDecimal
+        uint256 executionPrice
     ) internal returns (Position memory) {
         Position memory position = positions[openingPositionFlag[positionKey]];
 
@@ -192,28 +196,29 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         perpsVault.depositCollateral(order.account, order.collateralDeltaUsd);
 
         bool isNew = position.sizeInUsd == 0 && !position.isClose;
+        uint256 increaseSizeDeltaToken = (order.sizeDeltaUsd * 10 ** 18) /
+            executionPrice;
         if (isNew) {
             position.account = order.account;
             position.market = order.market;
             position.collateralToken = order.collateralToken;
             position.sizeInUsd = order.sizeDeltaUsd;
-            position.sizeInToken =
-                (order.sizeDeltaUsd * executionPriceDecimal) /
-                executionPrice;
+            position.sizeInToken = increaseSizeDeltaToken;
             position.collateralInUsd = order.collateralDeltaUsd;
             position.isLong = order.isLong;
             position.id = positionId;
 
             positions[position.id] = position;
-            userOpeningPositions[position.account].push(position.id);
+            accountOpenPositions[position.account].push(position.id);
             positionId += 1;
         } else {
             position.sizeInUsd += order.sizeDeltaUsd;
-            position.sizeInToken +=
-                (order.sizeDeltaUsd * executionPriceDecimal) /
-                executionPrice;
+            position.sizeInToken += increaseSizeDeltaToken;
             position.collateralInUsd += order.collateralDeltaUsd;
         }
+
+        Market storage market = markets[position.market];
+        _updateMarket(market, position, increaseSizeDeltaToken);
 
         positions[openingPositionFlag[positionKey]] = position;
 
@@ -226,10 +231,16 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     function decreasePosition(
         bytes32 positionKey,
         Order memory order,
-        uint256 executionPrice,
-        uint256 executionPriceDecimal
+        uint256 executionPrice
     ) internal returns (Position memory) {
         Position memory position = positions[openingPositionFlag[positionKey]];
+        Market storage market = markets[position.market];
+
+        int256 fundingPnl = Funding.getAccruedFunding(
+            market,
+            position,
+            executionPrice
+        );
 
         uint256 decreaseSizeDeltaUsd = order.sizeDeltaUsd > position.sizeInUsd
             ? position.sizeInUsd
@@ -242,41 +253,46 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             ? position.collateralInUsd
             : order.collateralDeltaUsd;
         uint256 currentPositionSizeInUsd = (position.sizeInToken *
-            executionPrice) / executionPriceDecimal;
+            executionPrice) / 10 ** 18;
 
         //PnL
         int256 totalPnl = position.isLong
             ? int256(currentPositionSizeInUsd - position.sizeInUsd)
             : int256(position.sizeInUsd - currentPositionSizeInUsd);
-        int256 pnl = (totalPnl * int256(decreaseSizeDeltaToken)) /
+        int256 realisedPnl = (totalPnl * int256(decreaseSizeDeltaToken)) /
             int256(position.sizeInToken);
 
         //Update value
         position.sizeInUsd -= decreaseSizeDeltaUsd;
         position.collateralInUsd -= decreaseCollateralDeltaUsd;
         position.sizeInToken -= decreaseSizeDeltaToken;
-        position.realisedPnl += pnl;
+        position.realisedPnl += realisedPnl;
+        position.paidFunding += fundingPnl;
+        position.latestInteractionFunding = market.lastFundingValue;
+
+        _updateMarket(market, position, decreaseSizeDeltaToken);
 
         if (position.sizeInUsd == 0) {
             position.isClose = true;
-            removeFromArrayByValue(
-                userOpeningPositions[position.account],
+            _removeFromArrayByValue(
+                accountOpenPositions[position.account],
                 position.id
             );
         }
         uint256 flag;
         {
             flag = openingPositionFlag[positionKey];
-            positions[flag] = position;
         }
+        positions[flag] = position;
 
         //transfer collateral & pnl
         uint256 fees = (order.sizeDeltaUsd * protocolFee) / FACTOR;
         uint256 receivedAmount = order.collateralDeltaUsd - fees;
+        int256 pnl = realisedPnl + fundingPnl;
         if (pnl >= 0) {
-            receivedAmount += _abs(pnl);
+            receivedAmount += Math.abs(pnl);
         } else {
-            receivedAmount -= _abs(pnl);
+            receivedAmount -= Math.abs(pnl);
         }
         perpsVault.settleTrade(order.account, pnl, fees);
         perpsVault.withdrawCollateral(order.account, receivedAmount);
@@ -293,10 +309,10 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         return positions[id];
     }
 
-    function getUserOpeningOrders(
-        address user
+    function getOpenOrders(
+        address account
     ) external view returns (Order[] memory) {
-        uint256[] memory orderIds = userOpeningOrders[user];
+        uint256[] memory orderIds = accountOpenOrders[account];
         Order[] memory _orders = new Order[](orderIds.length);
         for (uint256 i = 0; i < orderIds.length; i++) {
             _orders[i] = orders[orderIds[i]];
@@ -307,26 +323,26 @@ contract PerpsMarket is IPerpsMarket, Authorization {
 
     function setKeeperFee(
         uint256 _keeperFee
-    ) external auth(OPERATOR_ROLE, msg.sender) {
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
         keeperFee = _keeperFee;
     }
 
     function setProtocolFee(
         uint256 _protocolFee
-    ) external auth(OPERATOR_ROLE, msg.sender) {
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
         protocolFee = _protocolFee;
     }
 
     function setEnableExchange(
         bool _enableExchange
-    ) external auth(OPERATOR_ROLE, msg.sender) {
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
         enableExchange = _enableExchange;
     }
 
-    function getUserOpeningPositions(
-        address user
+    function getOpenPositions(
+        address acccount
     ) external view returns (Position[] memory) {
-        uint256[] memory positionIds = userOpeningPositions[user];
+        uint256[] memory positionIds = accountOpenPositions[acccount];
         Position[] memory _positions = new Position[](positionIds.length);
         for (uint256 i = 0; i < positionIds.length; i++) {
             _positions[i] = positions[positionIds[i]];
@@ -345,7 +361,22 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         return order;
     }
 
-    function removeFromArrayByValue(
+    function _updateMarket(
+        Market storage market,
+        Position memory position,
+        uint256 size
+    ) internal {
+        market.size += size;
+        int256 sizeDelta;
+        if (position.isLong) {
+            sizeDelta = int256(size) * -1;
+        } else {
+            sizeDelta = int256(size);
+        }
+        market.skew += sizeDelta;
+    }
+
+    function _removeFromArrayByValue(
         uint256[] storage arr,
         uint256 value
     ) internal {
@@ -383,13 +414,6 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             return
                 uint(uint64(price.price)) /
                 10 ** uint32(priceDecimals - targetDecimals);
-        }
-    }
-
-    function _abs(int256 x) internal pure returns (uint256 z) {
-        assembly {
-            let mask := sub(0, shr(255, x))
-            z := xor(mask, add(mask, x))
         }
     }
 }

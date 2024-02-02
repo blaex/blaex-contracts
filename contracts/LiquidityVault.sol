@@ -10,6 +10,7 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {PoolERC20} from "./core/PoolERC20.sol";
 import {Authorization} from "./securities/Authorization.sol";
+import {Math} from "./utils/Math.sol";
 
 contract LiquidityVault is
     ILiquidityVault,
@@ -98,12 +99,12 @@ contract LiquidityVault is
         int256 delta = _pnl - int256(_fees);
 
         if (delta > 0) {
-            USDB.transfer(perpsVault, _abs(delta));
+            USDB.transfer(perpsVault, Math.abs(delta));
         } else if (delta < 0) {
             uint256 balanceBefore = _balanceUSDB();
-            IPerpsVaultCallback(msg.sender).payCallback(_abs(delta));
+            IPerpsVaultCallback(msg.sender).payCallback(Math.abs(delta));
             require(
-                balanceBefore - _abs(delta) <= _balanceUSDB(),
+                balanceBefore - Math.abs(delta) <= _balanceUSDB(),
                 "LiquidityVault: Balance mismatch"
             );
         }
@@ -164,13 +165,6 @@ contract LiquidityVault is
         );
         require(success && data.length >= 32);
         return abi.decode(data, (uint256));
-    }
-
-    function _abs(int256 x) internal pure returns (uint256 z) {
-        assembly {
-            let mask := sub(0, shr(255, x))
-            z := xor(mask, add(mask, x))
-        }
     }
 
     /**

@@ -18,7 +18,6 @@ interface IPerpsMarket {
         int256 lastFundingRate;
         int256 lastFundingValue;
         uint256 lastFundingTime;
-        int256 debtCorrectionAccumulator;
         bytes32 priceFeedId;
         bool enable;
     }
@@ -32,6 +31,8 @@ interface IPerpsMarket {
         uint256 sizeInToken;
         uint256 collateralInUsd;
         int256 realisedPnl;
+        int256 paidFunding;
+        int256 latestInteractionFunding;
         bool isLong;
         bool isClose;
     }
@@ -98,12 +99,12 @@ interface IPerpsMarket {
 
     function getPosition(uint256 id) external view returns (Position memory);
 
-    function getUserOpeningOrders(
-        address user
+    function getOpenOrders(
+        address account
     ) external view returns (Order[] memory);
 
-    function getUserOpeningPositions(
-        address user
+    function getOpenPositions(
+        address account
     ) external view returns (Position[] memory);
 
     function setKeeperFee(uint256 _keeperFee) external;
@@ -137,7 +138,7 @@ interface IPerpsMarket {
     event PositionModified(
         uint256 positionId,
         address indexToken,
-        address sizeInUsdl,
+        address sizeInUsd,
         address sizeDeltaInUsd,
         address collateralInUsd,
         address collateralDeltaInUsd,
