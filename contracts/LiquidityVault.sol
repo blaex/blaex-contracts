@@ -55,40 +55,40 @@ contract LiquidityVault is
         require(_amount > 0, "LiquidityVault: Invalid amount");
         uint256 feeAmount = (_amount * fee) / FACTOR;
         uint256 depositAmount = _amount - feeAmount;
-        USDB.transferFrom(msg.sender, address(this), _amount);
-        USDB.transfer(feeReceiver, feeAmount);
 
         uint256 sharesAmount = getSharesByPooledToken(depositAmount);
         if (sharesAmount == 0) {
             sharesAmount = depositAmount;
         }
 
+        USDB.transferFrom(msg.sender, address(this), _amount);
+        USDB.transfer(feeReceiver, feeAmount);
         _mintShares(msg.sender, sharesAmount);
 
-        emit Deposit(msg.sender, _amount);
+        emit Deposit(msg.sender, _amount, sharesAmount);
         emit FeeCharged(msg.sender, feeReceiver, feeAmount);
 
         _emitTransferAfterMintingShares(msg.sender, sharesAmount);
     }
 
-    function withdraw(uint256 _amount) external nonReentrant {
-        require(_amount > 0, "LiquidityVault: Invalid amount");
+    function withdraw(uint256 _sharesAmount) external nonReentrant {
+        require(_sharesAmount > 0, "LiquidityVault: Invalid amount");
         require(
-            balanceOf(msg.sender) >= _amount,
+            balanceOf(msg.sender) >= _sharesAmount,
             "LiquidityVault: Not enough balance"
         );
 
-        uint256 feeAmount = (_amount * fee) / FACTOR;
-        uint256 withdrawAmount = _amount - feeAmount;
+        uint256 amount = getPooledTokenByShares(_sharesAmount);
 
+        uint256 feeAmount = (amount * fee) / FACTOR;
+        uint256 withdrawAmount = amount - feeAmount;
+        //Burn
+
+        _burnShares(msg.sender, _sharesAmount);
         USDB.transfer(msg.sender, withdrawAmount);
         USDB.transfer(feeReceiver, feeAmount);
 
-        //Burn
-        uint256 sharesAmount = getSharesByPooledToken(_amount);
-        _burnShares(msg.sender, sharesAmount);
-
-        emit Withdraw(msg.sender, _amount);
+        emit Withdraw(msg.sender, _sharesAmount, amount);
         emit FeeCharged(msg.sender, feeReceiver, feeAmount);
     }
 

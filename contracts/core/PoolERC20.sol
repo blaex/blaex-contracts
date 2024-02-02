@@ -28,24 +28,14 @@ contract PoolERC20 is IPoolERC20, IERC20, Pool {
         return 18;
     }
 
-    /**
-     * @return the amount of tokens owned by the `_account`.
-     *
-     * @dev Balances are dynamic and equal the `_account`'s share in the amount of the
-     * total Token controlled by the protocol. See `sharesOf`.
-     */
     function balanceOf(address _account) public view returns (uint256) {
-        return getPooledTokenByShares(_sharesOf(_account));
+        return _sharesOf(_account);
+        // return getPooledTokenByShares(_sharesOf(_account));
     }
 
-    /**
-     * @return the amount of tokens in existence.
-     *
-     * @dev Always equals to `_getTotalPooledToken()` since token amount
-     * is pegged to the total amount of Token controlled by the protocol.
-     */
     function totalSupply() public view returns (uint256) {
-        return _getTotalPooledToken();
+        return _getTotalShares();
+        // return _getTotalPooledToken();
     }
 
     /**

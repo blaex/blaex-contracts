@@ -22,22 +22,22 @@ async function main() {
     wallet1 as any
   );
 
-  // const tx1 = await LiquidityVaultContract.setPerpsVault(PERPS_VAULT_ADDRESS);
-  // console.log("tx1", tx1);
+  const tx1 = await LiquidityVaultContract.setPerpsVault(PERPS_VAULT_ADDRESS);
+  console.log("tx1", tx1);
 
-  // delay(3000);
+  delay(3000);
 
-  // const tx2 = await PerpsVaultContract.setLiquidityVault(
-  //   LIQUIDITY_VAULT_ADDRESS
-  // );
-  // console.log("tx2", tx2);
-
-  // delay(3000);
-
-  const tx3 = await PerpsVaultContract.setPerpsMarket(
-    "0xD4c8b3710d399c1810e48365727FD28bD4ec0314"
+  const tx2 = await PerpsVaultContract.setLiquidityVault(
+    LIQUIDITY_VAULT_ADDRESS
   );
-  console.log("tx3", tx3);
+  console.log("tx2", tx2);
+
+  // delay(3000);
+
+  // const tx3 = await PerpsVaultContract.setPerpsMarket(
+  //   "0xD4c8b3710d399c1810e48365727FD28bD4ec0314"
+  // );
+  // console.log("tx3", tx3);
 }
 
 main();

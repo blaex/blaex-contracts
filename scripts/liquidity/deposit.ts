@@ -7,17 +7,17 @@ import delay from "../../utils/delay";
 require("dotenv").config();
 
 async function main() {
-  const amount = ethers.utils.parseEther("1000");
-  const [wallet1] = await ethers.getSigners();
+  const amount = ethers.utils.parseEther("2000");
+  const [, wallet] = await ethers.getSigners();
   const USDB = (network.config as BlaexNetworkConfig).USDB;
-  const USDBContract = new ethers.Contract(USDB, USDB_ABI, wallet1 as any);
+  const USDBContract = new ethers.Contract(USDB, USDB_ABI, wallet as any);
 
   console.log("LIQUIDITY_VAULT_ADDRESS", LIQUIDITY_VAULT_ADDRESS);
   console.log("USDB", USDB);
   const LiquidityVaultContract = new ethers.Contract(
     LIQUIDITY_VAULT_ADDRESS,
     LIQUIDITY_VAULT_ABI,
-    wallet1 as any
+    wallet as any
   );
 
   const approvedTx = await USDBContract.approve(
