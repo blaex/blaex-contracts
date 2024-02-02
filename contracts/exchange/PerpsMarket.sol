@@ -15,7 +15,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     IPyth pyth;
     IPerpsVault perpsVault;
 
-    bool public enableExchange;
+    bool public enableExchange = true;
     uint256 public protocolFee = 500;
     uint256 public constant FACTOR = 10000;
     mapping(uint256 => Market) markets;
@@ -27,8 +27,8 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     uint256 positionId = 1;
     mapping(uint256 => Order) orders;
     mapping(uint256 => Position) positions;
-    mapping(address => uint256[]) userOpeningOrders;
-    mapping(address => uint256[]) userOpeningPositions;
+    mapping(address => uint256[]) openOrders;
+    mapping(address => uint256[]) openPositions;
     mapping(bytes32 => uint256) openingPositionFlag;
 
     constructor(address _owner, address _perpsVault, address _pyth) {
@@ -114,7 +114,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         order.id = orderId;
 
         orders[order.id] = order;
-        userOpeningOrders[msg.sender].push(order.id);
+        openOrders[msg.sender].push(order.id);
         orderId += 1;
 
         emit OrderSubmitted(
@@ -140,7 +140,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         );
 
         orders[id].isCanceled = true;
-        removeFromArrayByValue(userOpeningOrders[order.account], id);
+        _removeFromArrayByValue(openOrders[order.account], id);
         emit OrderCanceled(id);
     }
 
@@ -152,6 +152,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         orders[id].isFilled = true;
 
         //TODO: validate price and block
+        uint256 currentPrice = indexPrice(order.market);
 
         //Transfer fee
         USDB.transferFrom(address(this), msg.sender, order.keeperFee);
@@ -165,13 +166,15 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             order.orderType == OrderType.MarketIncrease ||
             order.orderType == OrderType.LimitIncrease
         ) {
-            position = increasePosition(positionKey, order, 0, 0);
+            position = increasePosition(positionKey, order, currentPrice);
         } else if (
             order.orderType == OrderType.MarketDecrease ||
             order.orderType == OrderType.LimitDecrease
         ) {
-            position = decreasePosition(positionKey, order, 0, 0);
+            position = decreasePosition(positionKey, order, currentPrice);
         }
+
+        _recomputeFunding(markets[order.market], currentPrice);
 
         emit OrderExecuted(id, 0, block.timestamp);
     }
@@ -179,8 +182,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     function increasePosition(
         bytes32 positionKey,
         Order memory order,
-        uint256 executionPrice,
-        uint256 executionPriceDecimal
+        uint256 executionPrice
     ) internal returns (Position memory) {
         Position memory position = positions[openingPositionFlag[positionKey]];
 
@@ -192,28 +194,36 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         perpsVault.depositCollateral(order.account, order.collateralDeltaUsd);
 
         bool isNew = position.sizeInUsd == 0 && !position.isClose;
+        uint256 sizeInToken = (order.sizeDeltaUsd * 10 ** 18) / executionPrice;
         if (isNew) {
             position.account = order.account;
             position.market = order.market;
             position.collateralToken = order.collateralToken;
             position.sizeInUsd = order.sizeDeltaUsd;
-            position.sizeInToken =
-                (order.sizeDeltaUsd * executionPriceDecimal) /
-                executionPrice;
+            position.sizeInToken = sizeInToken;
             position.collateralInUsd = order.collateralDeltaUsd;
             position.isLong = order.isLong;
             position.id = positionId;
 
             positions[position.id] = position;
-            userOpeningPositions[position.account].push(position.id);
+            openPositions[position.account].push(position.id);
             positionId += 1;
         } else {
             position.sizeInUsd += order.sizeDeltaUsd;
-            position.sizeInToken +=
-                (order.sizeDeltaUsd * executionPriceDecimal) /
-                executionPrice;
+            position.sizeInToken += sizeInToken;
             position.collateralInUsd += order.collateralDeltaUsd;
         }
+
+        Market storage market = markets[position.market];
+
+        market.size += sizeInToken;
+        int256 sizeDelta;
+        if (position.isLong) {
+            sizeDelta = int256(sizeInToken);
+        } else {
+            sizeDelta = int256(sizeInToken) * -1;
+        }
+        market.skew += sizeDelta;
 
         positions[openingPositionFlag[positionKey]] = position;
 
@@ -226,10 +236,11 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     function decreasePosition(
         bytes32 positionKey,
         Order memory order,
-        uint256 executionPrice,
-        uint256 executionPriceDecimal
+        uint256 executionPrice
     ) internal returns (Position memory) {
         Position memory position = positions[openingPositionFlag[positionKey]];
+
+        int256 fundingPnl = _accruedFunding(position, executionPrice);
 
         uint256 decreaseSizeDeltaUsd = order.sizeDeltaUsd > position.sizeInUsd
             ? position.sizeInUsd
@@ -242,25 +253,39 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             ? position.collateralInUsd
             : order.collateralDeltaUsd;
         uint256 currentPositionSizeInUsd = (position.sizeInToken *
-            executionPrice) / executionPriceDecimal;
+            executionPrice) / 10 ** 18;
 
         //PnL
         int256 totalPnl = position.isLong
             ? int256(currentPositionSizeInUsd - position.sizeInUsd)
             : int256(position.sizeInUsd - currentPositionSizeInUsd);
-        int256 pnl = (totalPnl * int256(decreaseSizeDeltaToken)) /
+        int256 pricePnl = (totalPnl * int256(decreaseSizeDeltaToken)) /
             int256(position.sizeInToken);
 
         //Update value
         position.sizeInUsd -= decreaseSizeDeltaUsd;
         position.collateralInUsd -= decreaseCollateralDeltaUsd;
         position.sizeInToken -= decreaseSizeDeltaToken;
-        position.realisedPnl += pnl;
+        position.realisedPnl += pricePnl;
+
+        Market storage market = markets[position.market];
+
+        market.size += decreaseSizeDeltaToken;
+        int256 sizeDelta;
+        if (position.isLong) {
+            sizeDelta = int256(decreaseSizeDeltaToken) * -1;
+        } else {
+            sizeDelta = int256(decreaseSizeDeltaToken);
+        }
+        market.skew += sizeDelta;
+
+        position.paidFunding += fundingPnl;
+        position.latestInteractionFunding = market.lastFundingValue;
 
         if (position.sizeInUsd == 0) {
             position.isClose = true;
-            removeFromArrayByValue(
-                userOpeningPositions[position.account],
+            _removeFromArrayByValue(
+                openPositions[position.account],
                 position.id
             );
         }
@@ -273,6 +298,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         //transfer collateral & pnl
         uint256 fees = (order.sizeDeltaUsd * protocolFee) / FACTOR;
         uint256 receivedAmount = order.collateralDeltaUsd - fees;
+        int256 pnl = pricePnl + fundingPnl;
         if (pnl >= 0) {
             receivedAmount += _abs(pnl);
         } else {
@@ -293,10 +319,10 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         return positions[id];
     }
 
-    function getUserOpeningOrders(
-        address user
+    function getOpenOrders(
+        address account
     ) external view returns (Order[] memory) {
-        uint256[] memory orderIds = userOpeningOrders[user];
+        uint256[] memory orderIds = openOrders[account];
         Order[] memory _orders = new Order[](orderIds.length);
         for (uint256 i = 0; i < orderIds.length; i++) {
             _orders[i] = orders[orderIds[i]];
@@ -307,26 +333,26 @@ contract PerpsMarket is IPerpsMarket, Authorization {
 
     function setKeeperFee(
         uint256 _keeperFee
-    ) external auth(OPERATOR_ROLE, msg.sender) {
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
         keeperFee = _keeperFee;
     }
 
     function setProtocolFee(
         uint256 _protocolFee
-    ) external auth(OPERATOR_ROLE, msg.sender) {
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
         protocolFee = _protocolFee;
     }
 
     function setEnableExchange(
         bool _enableExchange
-    ) external auth(OPERATOR_ROLE, msg.sender) {
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
         enableExchange = _enableExchange;
     }
 
-    function getUserOpeningPositions(
-        address user
+    function getOpeningPositions(
+        address acccount
     ) external view returns (Position[] memory) {
-        uint256[] memory positionIds = userOpeningPositions[user];
+        uint256[] memory positionIds = openPositions[acccount];
         Position[] memory _positions = new Position[](positionIds.length);
         for (uint256 i = 0; i < positionIds.length; i++) {
             _positions[i] = positions[positionIds[i]];
@@ -345,7 +371,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         return order;
     }
 
-    function removeFromArrayByValue(
+    function _removeFromArrayByValue(
         uint256[] storage arr,
         uint256 value
     ) internal {
@@ -363,6 +389,107 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         if (found || arr[arr.length - 1] == value) {
             arr.pop();
         }
+    }
+
+    function _calculateNextFunding(
+        Market storage market,
+        uint price
+    ) internal view returns (int nextFunding) {
+        nextFunding =
+            market.lastFundingValue +
+            _unrecordedFunding(market, price);
+    }
+
+    function _unrecordedFunding(
+        Market storage market,
+        uint price
+    ) internal view returns (int) {
+        int fundingRate = _currentFundingRate(market);
+        // note the minus sign: funding flows in the opposite direction to the skew.
+        int avgFundingRate = -(market.lastFundingRate + fundingRate) / 2;
+
+        return
+            (((avgFundingRate * _proportionalElapsed(market)) / 1e18) *
+                int(price)) / 1e18;
+    }
+
+    function _currentFundingRate(
+        Market storage market
+    ) internal view returns (int) {
+        // calculations:
+        //  - velocity          = proportional_skew * max_funding_velocity
+        //  - proportional_skew = skew / skew_scale
+        //
+        // example:
+        //  - prev_funding_rate     = 0
+        //  - prev_velocity         = 0.0025
+        //  - time_delta            = 29,000s
+        //  - max_funding_velocity  = 0.025 (2.5%)
+        //  - skew                  = 300
+        //  - skew_scale            = 10,000
+        //
+        // note: prev_velocity just refs to the velocity _before_ modifying the market skew.
+        //
+        // funding_rate = prev_funding_rate + prev_velocity * (time_delta / seconds_in_day)
+        // funding_rate = 0 + 0.0025 * (29,000 / 86,400)
+        //              = 0 + 0.0025 * 0.33564815
+        //              = 0.00083912
+        return
+            market.lastFundingRate +
+            ((_currentFundingVelocity(market) * _proportionalElapsed(market)) /
+                1e18);
+    }
+
+    function _currentFundingVelocity(
+        Market storage self
+    ) internal view returns (int) {
+        int maxFundingVelocity = 9000000000000000000;
+        int skewScale = 100000000000000000000000;
+        // Avoid a panic due to div by zero. Return 0 immediately.
+        // if (skewScale == 0) {
+        //     return 0;
+        // }
+        // Ensures the proportionalSkew is between -1 and 1.
+        int pSkew = (self.skew * 1e18) / skewScale;
+        int pSkewBounded = _min(_max(-1e18, pSkew), 1e18);
+        return (pSkewBounded * maxFundingVelocity) / 1e18;
+    }
+
+    function _proportionalElapsed(
+        Market storage market
+    ) internal view returns (int) {
+        // even though timestamps here are not D18, divDecimal multiplies by 1e18 to preserve decimals into D18
+        return
+            int(((block.timestamp - market.lastFundingTime) * 1e18) / 1 days);
+    }
+
+    function _accruedFunding(
+        Position memory position,
+        uint price
+    ) internal view returns (int accruedFunding) {
+        int nextFunding = _calculateNextFunding(
+            markets[position.market],
+            price
+        );
+        int netFundingPerUnit = nextFunding - position.latestInteractionFunding;
+        int size = position.isLong
+            ? int(position.sizeInToken)
+            : int(position.sizeInToken) * -1;
+        accruedFunding = (size * netFundingPerUnit) / 1e18;
+    }
+
+    function _recomputeFunding(
+        Market storage market,
+        uint price
+    ) internal returns (int fundingRate, int fundingValue) {
+        fundingRate = _currentFundingRate(market);
+        fundingValue = _calculateNextFunding(market, price);
+
+        market.lastFundingRate = fundingRate;
+        market.lastFundingValue = fundingValue;
+        market.lastFundingTime = block.timestamp;
+
+        return (fundingRate, fundingValue);
     }
 
     function _convertToUint(
@@ -391,5 +518,21 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             let mask := sub(0, shr(255, x))
             z := xor(mask, add(mask, x))
         }
+    }
+
+    function _max(int x, int y) internal pure returns (int) {
+        return x < y ? y : x;
+    }
+
+    function _max(uint x, uint y) internal pure returns (uint) {
+        return x < y ? y : x;
+    }
+
+    function _min(int x, int y) internal pure returns (int) {
+        return x < y ? x : y;
+    }
+
+    function _min(uint x, uint y) internal pure returns (uint) {
+        return x < y ? x : y;
     }
 }
