@@ -127,7 +127,7 @@ interface IPerpsMarket {
         uint256 keeperFee
     );
 
-    event OrderCanceled(uint256 orderId);
+    event OrderCanceled(uint256 orderId, uint256 executeTime);
 
     event OrderExecuted(
         uint256 orderId,
@@ -137,11 +137,11 @@ interface IPerpsMarket {
 
     event PositionModified(
         uint256 positionId,
-        address indexToken,
-        address sizeInUsd,
-        address sizeDeltaInUsd,
-        address collateralInUsd,
-        address collateralDeltaInUsd,
+        uint256 market,
+        uint256 sizeInUsd,
+        uint256 sizeDeltaInUsd,
+        uint256 collateralInUsd,
+        uint256 collateralDeltaInUsd,
         bool isLong
     );
 }
