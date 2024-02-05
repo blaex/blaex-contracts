@@ -34,6 +34,7 @@
     "@gelatonetwork/relay-sdk": "5.0.0",
     "@openzeppelin/contracts": "4.9.5",
     "@openzeppelin/defender-sdk": "1.8.0",
+    "@pythnetwork/pyth-sdk-solidity": "^2.4.0",
     "@uniswap/v3-core": "1.0.0",
     "base64-sol": "1.1.0",
     "hardhat-watcher": "2.3.0"

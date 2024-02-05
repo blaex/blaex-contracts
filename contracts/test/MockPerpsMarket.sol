@@ -18,8 +18,78 @@ contract MockPerpsMarket {
         _;
     }
 
+    enum OrderType {
+        MarketIncrease,
+        LimitIncrease,
+        MarketDecrease,
+        LimitDecrease,
+        Liquidation
+    }
+
+    event OrderSubmitted(
+        uint256 orderId,
+        OrderType orderType,
+        bool isLong,
+        address account,
+        uint256 market,
+        address collateralToken,
+        uint256 collateralDeltaUsd,
+        uint256 sizeDeltaUsd,
+        uint256 triggerPrice,
+        uint256 acceptablePrice,
+        uint256 keeperFee
+    );
+
+    event OrderCanceled(uint256 orderId);
+
+    event OrderExecuted(
+        uint256 orderId,
+        uint256 executePrice,
+        uint256 executeTime
+    );
+
     constructor(address _perpsVault) {
         perpsVault = IPerpsVault(_perpsVault);
+    }
+
+    function emitCreateOrder(
+        uint256 orderId,
+        OrderType orderType,
+        bool isLong,
+        address account,
+        uint256 market,
+        address collateralToken,
+        uint256 collateralDeltaUsd,
+        uint256 sizeDeltaUsd,
+        uint256 triggerPrice,
+        uint256 acceptablePrice,
+        uint256 keeperFee
+    ) external {
+        emit OrderSubmitted(
+            orderId,
+            orderType,
+            isLong,
+            account,
+            market,
+            collateralToken,
+            collateralDeltaUsd,
+            sizeDeltaUsd,
+            triggerPrice,
+            acceptablePrice,
+            keeperFee
+        );
+    }
+
+    function emitExecuteOrder(
+        uint256 orderId,
+        uint256 executePrice,
+        uint256 executeTime
+    ) external {
+        emit OrderExecuted(orderId, executePrice, executeTime);
+    }
+
+    function emitCancelOrder(uint256 orderId) external {
+        emit OrderCanceled(orderId);
     }
 
     function depositCollateralCallback(

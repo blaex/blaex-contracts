@@ -49,13 +49,13 @@ abstract contract Pool is IPool, Pausable {
      * @return the amount of shares that corresponds to `_ronAmount` protocol-controlled Token.
      */
     function getSharesByPooledToken(
-        uint256 _ronAmount
+        uint256 _amount
     ) public view returns (uint256) {
         uint256 totalPooledToken = _getTotalPooledToken();
         if (totalPooledToken == 0) {
             return 0;
         } else {
-            return (_ronAmount * _getTotalShares()) / totalPooledToken;
+            return (_amount * _getTotalShares()) / totalPooledToken;
         }
     }
 

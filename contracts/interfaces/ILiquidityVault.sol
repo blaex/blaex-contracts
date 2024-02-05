@@ -8,9 +8,9 @@ interface ILiquidityVault {
         uint256 yield;
     }
 
-    event Deposit(address sender, uint256 value);
+    event Deposit(address sender, uint256 amountUSDB, uint256 amountBLI);
 
-    event Withdraw(address receiver, uint256 value);
+    event Withdraw(address receiver, uint256 amountBLI, uint256 amountUSDB);
 
     event FeeCharged(address sender, address receiver, uint256 value);
 

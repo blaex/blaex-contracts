@@ -12,6 +12,7 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {Pool} from "./core/Pool.sol";
 import {Authorization} from "./securities/Authorization.sol";
+import {Math} from "./utils/Math.sol";
 
 contract PerpsVault is
     IPerpsVault,
@@ -113,14 +114,14 @@ contract PerpsVault is
         int256 _pnl,
         uint256 _fees
     ) external onlyPerpsMarket {
-        uint256 amount = _abs(_pnl - int256(_fees));
+        uint256 amount = Math.abs(_pnl - int256(_fees));
         uint256 sharesAmount = getSharesByPooledToken(amount);
-        if (_pnl > 0) {
+        if (sharesAmount > 0) {
             if (sharesAmount == 0) {
                 sharesAmount = amount;
             }
             _mintShares(_account, sharesAmount);
-        } else if (_pnl < 0) {
+        } else if (sharesAmount < 0) {
             _burnShares(_account, sharesAmount);
         }
         liquidityVault.settleTrade(_pnl, _fees);
@@ -179,13 +180,6 @@ contract PerpsVault is
         );
         require(success && data.length >= 32);
         return abi.decode(data, (uint256));
-    }
-
-    function _abs(int256 x) internal pure returns (uint256 z) {
-        assembly {
-            let mask := sub(0, shr(255, x))
-            z := xor(mask, add(mask, x))
-        }
     }
 
     function _getTotalPooledToken() internal view override returns (uint256) {

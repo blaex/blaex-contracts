@@ -10,6 +10,7 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {PoolERC20} from "./core/PoolERC20.sol";
 import {Authorization} from "./securities/Authorization.sol";
+import {Math} from "./utils/Math.sol";
 
 contract LiquidityVault is
     ILiquidityVault,
@@ -54,40 +55,40 @@ contract LiquidityVault is
         require(_amount > 0, "LiquidityVault: Invalid amount");
         uint256 feeAmount = (_amount * fee) / FACTOR;
         uint256 depositAmount = _amount - feeAmount;
-        USDB.transferFrom(msg.sender, address(this), _amount);
-        USDB.transfer(feeReceiver, feeAmount);
 
         uint256 sharesAmount = getSharesByPooledToken(depositAmount);
         if (sharesAmount == 0) {
             sharesAmount = depositAmount;
         }
 
+        USDB.transferFrom(msg.sender, address(this), _amount);
+        USDB.transfer(feeReceiver, feeAmount);
         _mintShares(msg.sender, sharesAmount);
 
-        emit Deposit(msg.sender, _amount);
+        emit Deposit(msg.sender, _amount, sharesAmount);
         emit FeeCharged(msg.sender, feeReceiver, feeAmount);
 
         _emitTransferAfterMintingShares(msg.sender, sharesAmount);
     }
 
-    function withdraw(uint256 _amount) external nonReentrant {
-        require(_amount > 0, "LiquidityVault: Invalid amount");
+    function withdraw(uint256 _sharesAmount) external nonReentrant {
+        require(_sharesAmount > 0, "LiquidityVault: Invalid amount");
         require(
-            balanceOf(msg.sender) >= _amount,
+            balanceOf(msg.sender) >= _sharesAmount,
             "LiquidityVault: Not enough balance"
         );
 
-        uint256 feeAmount = (_amount * fee) / FACTOR;
-        uint256 withdrawAmount = _amount - feeAmount;
+        uint256 amount = getPooledTokenByShares(_sharesAmount);
 
+        uint256 feeAmount = (amount * fee) / FACTOR;
+        uint256 withdrawAmount = amount - feeAmount;
+        //Burn
+
+        _burnShares(msg.sender, _sharesAmount);
         USDB.transfer(msg.sender, withdrawAmount);
         USDB.transfer(feeReceiver, feeAmount);
 
-        //Burn
-        uint256 sharesAmount = getSharesByPooledToken(_amount);
-        _burnShares(msg.sender, sharesAmount);
-
-        emit Withdraw(msg.sender, _amount);
+        emit Withdraw(msg.sender, _sharesAmount, amount);
         emit FeeCharged(msg.sender, feeReceiver, feeAmount);
     }
 
@@ -98,12 +99,12 @@ contract LiquidityVault is
         int256 delta = _pnl - int256(_fees);
 
         if (delta > 0) {
-            USDB.transfer(perpsVault, _abs(delta));
+            USDB.transfer(perpsVault, Math.abs(delta));
         } else if (delta < 0) {
             uint256 balanceBefore = _balanceUSDB();
-            IPerpsVaultCallback(msg.sender).payCallback(_abs(delta));
+            IPerpsVaultCallback(msg.sender).payCallback(Math.abs(delta));
             require(
-                balanceBefore - _abs(delta) <= _balanceUSDB(),
+                balanceBefore - Math.abs(delta) <= _balanceUSDB(),
                 "LiquidityVault: Balance mismatch"
             );
         }
@@ -164,13 +165,6 @@ contract LiquidityVault is
         );
         require(success && data.length >= 32);
         return abi.decode(data, (uint256));
-    }
-
-    function _abs(int256 x) internal pure returns (uint256 z) {
-        assembly {
-            let mask := sub(0, shr(255, x))
-            z := xor(mask, add(mask, x))
-        }
     }
 
     /**
