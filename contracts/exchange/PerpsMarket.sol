@@ -168,9 +168,11 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         position.sizeInUsd = 0;
         position.collateralInUsd = 0;
         position.sizeInToken = 0;
-        position.realisedPnl += remainingCollateral <= pnlAbs ? pnl : totalPnl;
+        position.realisedPnl += remainingCollateral <= pnlAbs
+            ? (Math.abs(totalPnl) > Math.abs(pnl) ? pnl : totalPnl)
+            : totalPnl;
         position.paidFunding += remainingCollateral <= pnlAbs
-            ? int256(0)
+            ? (Math.abs(totalPnl) > Math.abs(pnl) ? int256(0) : pnl - totalPnl)
             : fundingPnl;
         position.latestInteractionFunding = market.lastFundingValue;
         position.paidFees += paidFees;
