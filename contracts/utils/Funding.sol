@@ -93,6 +93,12 @@ library Funding {
         accruedFunding = (size * netFundingPerUnit) / 1e18;
     }
 
+    event FundingRecomputed(
+        int fundingRate,
+        int fundingValue,
+        uint fundingTime
+    );
+
     function recomputeFunding(
         IPerpsMarket.Market storage market,
         uint price
@@ -103,6 +109,8 @@ library Funding {
         market.lastFundingRate = fundingRate;
         market.lastFundingValue = fundingValue;
         market.lastFundingTime = block.timestamp;
+
+        emit FundingRecomputed(fundingRate, fundingValue, block.timestamp);
 
         return (fundingRate, fundingValue);
     }

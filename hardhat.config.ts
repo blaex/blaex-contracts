@@ -46,17 +46,17 @@ const config: HardhatUserConfig = {
         USDB: "0x4200000000000000000000000000000000000022",
       },
     },
-    // mainnet: {
-    //   url: process.env.MAINNET_NODE_URL,
-    //   accounts: [
-    //     process.env.PRIVATE_KEY_1!,
-    //     process.env.PRIVATE_KEY_2!,
-    //     process.env.PRIVATE_KEY_3!,
-    //   ],
-    //   ...{
-    //     USDB: "",
-    //   },
-    // },
+    mainnet: {
+      url: process.env.MAINNET_NODE_URL,
+      accounts: [
+        process.env.PRIVATE_KEY_1!,
+        process.env.PRIVATE_KEY_2!,
+        process.env.PRIVATE_KEY_3!,
+      ],
+      ...{
+        USDB: "0x4300000000000000000000000000000000000003",
+      },
+    },
   },
   gasReporter: {
     currency: "USD",
@@ -68,7 +68,7 @@ const config: HardhatUserConfig = {
     // Your API key for Etherscan
     // Obtain one at https://etherscan.io/
     apiKey: {
-      mainnet: process.env.ETHERSCAN_API_KEY!,
+      blast: process.env.BlAST_SCAN_API_KEY!,
       blast_sepolia: "blast_sepolia", // apiKey is not required, just set a placeholder
     },
     customChains: [
@@ -79,6 +79,14 @@ const config: HardhatUserConfig = {
           apiURL:
             "https://api.routescan.io/v2/network/testnet/evm/168587773/etherscan",
           browserURL: "https://testnet.blastscan.io",
+        },
+      },
+      {
+        network: "blast",
+        chainId: 81457,
+        urls: {
+          apiURL: "https://api.blastscan.io/api",
+          browserURL: "https://blastscan.io",
         },
       },
     ],

@@ -28,7 +28,8 @@ contract LiquidityVault is
     uint256 fee;
 
     IERC20 public constant USDB =
-        IERC20(0x4200000000000000000000000000000000000022);
+        IERC20(0x4300000000000000000000000000000000000003);
+    // IERC20(0x4200000000000000000000000000000000000022);
 
     constructor(
         address _owner,

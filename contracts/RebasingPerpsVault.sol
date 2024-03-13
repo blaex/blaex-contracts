@@ -14,31 +14,28 @@ import {Pool} from "./core/Pool.sol";
 import {Authorization} from "./securities/Authorization.sol";
 import {Math} from "./utils/Math.sol";
 
-contract PerpsVault is
+contract RebasingPerpsVault is
     IPerpsVault,
     IPerpsVaultCallback,
+    Pool,
     Authorization,
     ReentrancyGuard
 {
     using Address for address;
     uint256 constant FACTOR = 10000;
 
-    mapping(address => uint256) _balances;
-
     ILiquidityVault liquidityVault;
     address perpsMarket;
-    address yieldReceiver;
 
     IERC20 public constant USDB =
         IERC20(0x4300000000000000000000000000000000000003);
     // IERC20(0x4200000000000000000000000000000000000022);
 
-    constructor(address _owner, address _yieldReceiver) {
+    constructor(address _owner) Pool() {
         IERC20Rebasing(address(USDB)).configure(
-            IERC20Rebasing.YieldMode.CLAIMABLE
+            IERC20Rebasing.YieldMode.AUTOMATIC
         );
         _setRole(_owner, CONTRACT_OWNER_ROLE, true);
-        yieldReceiver = _yieldReceiver;
     }
 
     modifier onlyLiquidityVault() {
@@ -58,49 +55,56 @@ contract PerpsVault is
     // Main functions
     // =====================================================================
 
-    function claimAllYield() external {
-        uint256 yield = IERC20Rebasing(address(USDB)).getClaimableAmount(
-            address(this)
-        );
-        IERC20Rebasing(address(USDB)).claim(yieldReceiver, yield);
-    }
-
     function depositCollateral(
         address _account,
         uint256 _amount
     ) external nonReentrant onlyPerpsMarket {
         require(_amount > 0, "PerpsVault: Invalid amount");
+        uint256 sharesAmount = getSharesByPooledToken(_amount);
+        if (sharesAmount == 0) {
+            sharesAmount = _amount;
+        }
+
         uint256 balanceBefore = _balanceUSDB();
         IPerpsMarketCallback(perpsMarket).depositCollateralCallback(_amount);
         require(
             balanceBefore + _amount <= _balanceUSDB(),
             "PerpsVault: Balance mismatch"
         );
-        _balances[_account] += _amount;
+        _mintShares(_account, sharesAmount);
 
         emit DepositCollateral(_account, _amount);
     }
 
     function withdrawCollateral(
         address _account,
-        uint256 _amount
-    ) public nonReentrant onlyPerpsMarket {
-        require(_amount > 0, "PerpsVault: Invalid amount");
+        uint256 _sharesAmount
+    ) external nonReentrant onlyPerpsMarket {
+        require(_sharesAmount > 0, "PerpsVault: Invalid amount");
         require(
-            balanceOf(_account) >= _amount,
+            balanceOf(_account) >= _sharesAmount,
             "PerpsVault: Not enough balance"
         );
-        _balances[_account] -= _amount;
-        USDB.transfer(perpsMarket, _amount);
 
-        emit WithdrawCollateral(_account, _amount);
+        uint256 amount = getPooledTokenByShares(_sharesAmount);
+        //Burn
+        _burnShares(_account, _sharesAmount);
+        USDB.transfer(perpsMarket, amount);
+
+        emit WithdrawCollateral(_account, amount);
     }
 
     function withdrawAllCollateral(
         address _account
     ) external nonReentrant onlyPerpsMarket {
-        uint256 amount = balanceOf(_account);
-        withdrawCollateral(_account, amount);
+        uint256 sharesAmount = balanceOf(_account);
+
+        //Burn
+        uint256 amount = getPooledTokenByShares(sharesAmount);
+        _burnShares(_account, sharesAmount);
+        USDB.transfer(perpsMarket, amount);
+
+        emit WithdrawCollateral(_account, amount);
     }
 
     function settleTrade(
@@ -108,11 +112,15 @@ contract PerpsVault is
         int256 _pnl,
         uint256 _fees
     ) external onlyPerpsMarket {
-        int256 amount = _pnl - int256(_fees);
-        if (amount > 0) {
-            _balances[_account] += Math.abs(amount);
-        } else if (amount < 0) {
-            _balances[_account] -= Math.abs(amount);
+        uint256 amount = Math.abs(_pnl - int256(_fees));
+        uint256 sharesAmount = getSharesByPooledToken(amount);
+        if (sharesAmount > 0) {
+            if (sharesAmount == 0) {
+                sharesAmount = amount;
+            }
+            _mintShares(_account, sharesAmount);
+        } else if (sharesAmount < 0) {
+            _burnShares(_account, sharesAmount);
         }
         liquidityVault.settleTrade(_pnl, _fees);
     }
@@ -126,7 +134,7 @@ contract PerpsVault is
     // =====================================================================
 
     function balanceOf(address _account) public view returns (uint256) {
-        return _balances[_account];
+        return _sharesOf(_account);
     }
 
     // =====================================================================
@@ -164,5 +172,9 @@ contract PerpsVault is
         );
         require(success && data.length >= 32);
         return abi.decode(data, (uint256));
+    }
+
+    function _getTotalPooledToken() internal view override returns (uint256) {
+        return USDB.balanceOf(address(this));
     }
 }

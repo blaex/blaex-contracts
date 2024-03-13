@@ -41,9 +41,6 @@ async function main() {
     priceFeedId: ethPriceFeedId,
   });
   console.log("tx", tx);
-  delay(3000);
-  const price = await PerpsMarketContract.indexPrice(1);
-  console.log("price", price.toString());
 }
 
 main();

@@ -1,10 +1,13 @@
 import { ethers } from "hardhat";
 
 async function main() {
-  const [wallet] = await ethers.getSigners();
+  const [wallet, feeReceiver] = await ethers.getSigners();
 
   const PerpsVault = await ethers.getContractFactory("PerpsVault");
-  const PerpsVaultContract = await PerpsVault.deploy(wallet.address);
+  const PerpsVaultContract = await PerpsVault.deploy(
+    wallet.address,
+    wallet.address
+  );
   await PerpsVaultContract.deployed();
   console.log("PerpsVault deployed to:", PerpsVaultContract.address);
 }

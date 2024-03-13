@@ -1,7 +1,9 @@
-import { PERPS_MARKET_ADDRESS } from "./../../utils/constants";
+import { PERPS_MARKET_ADDRESS } from "../../utils/constants";
 import { ethers, network } from "hardhat";
+import { abi as USDB_ABI } from "../../artifacts/contracts/USDB.sol/USDB.json";
 import { abi as PERPS_MARKET_ABI } from "../../artifacts/contracts/exchange/PerpsMarket.sol/PerpsMarket.json";
 import delay from "../../utils/delay";
+import { BlaexNetworkConfig } from "../../utils/types/config";
 require("dotenv").config();
 
 async function main() {
@@ -12,8 +14,9 @@ async function main() {
     PERPS_MARKET_ABI,
     wallet1 as any
   );
-  const price = await PerpsMarketContract.indexPrice(1);
-  console.log("price", price.toString());
+
+  const tx = await PerpsMarketContract.executeOrder(2);
+  console.log("tx", tx);
 }
 
 main();
