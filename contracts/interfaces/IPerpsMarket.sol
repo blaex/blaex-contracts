@@ -144,6 +144,15 @@ interface IPerpsMarket {
         int256 latestInteractionFunding,
         uint256 paidFees,
         bool isLong,
-        bool isClose
+        bool isClose,
+        bool isLiquidated
+    );
+
+    event PositionLiquidated(
+        uint256 positionId,
+        uint256 returnedCollateral,
+        uint256 protocolFees,
+        uint256 liquidationFees,
+        address executor
     );
 }

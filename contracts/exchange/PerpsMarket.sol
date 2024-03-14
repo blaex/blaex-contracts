@@ -25,7 +25,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
 
     address feeReceiver;
     uint256 public keeperFee = 0;
-    uint256 public liquidateFee = 5 * 1e18;
+    uint256 public liquidateFee = 2 * 1e18;
 
     uint256 orderId = 1;
     uint256 positionId = 1;
@@ -97,7 +97,7 @@ contract PerpsMarket is IPerpsMarket, Authorization {
     }
 
     function liquidate(uint256 _positionId) external whenEnableExchange {
-        Position memory position = positions[_positionId];
+        Position storage position = positions[_positionId];
         require(position.id > 0, "No position found");
         require(!position.isClose, "Position is close");
         require(!position.isLiquidated, "Position is liquidated");
@@ -132,30 +132,25 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         int256 pnl = remainingCollateral <= pnlAbs
             ? int256(remainingCollateral) * -1
             : (totalPnl + fundingPnl);
-        uint256 receivedAmount = remainingCollateral <= pnlAbs
+        uint256 returnedCollateral = remainingCollateral <= pnlAbs
             ? 0
             : remainingCollateral - pnlAbs;
-        uint256 paidFees;
-        uint256 executorFees;
 
+        uint256 liquidationFees;
         uint256 protocolFees = (position.sizeInUsd * protocolFee) / FACTOR;
-        if (receivedAmount > liquidateFee) {
-            paidFees += liquidateFee;
-            receivedAmount -= liquidateFee;
-            executorFees = liquidateFee;
-            if (receivedAmount > protocolFees) {
-                paidFees += protocolFees;
-                receivedAmount -= protocolFees;
+        if (returnedCollateral > liquidateFee) {
+            returnedCollateral -= liquidateFee;
+            liquidationFees = liquidateFee;
+            if (returnedCollateral > protocolFees) {
+                returnedCollateral -= protocolFees;
             } else {
-                paidFees += receivedAmount;
-                protocolFees = receivedAmount;
-                receivedAmount = 0;
+                protocolFees = returnedCollateral;
+                returnedCollateral = 0;
             }
         } else {
-            paidFees += receivedAmount;
-            executorFees = receivedAmount;
+            liquidationFees = returnedCollateral;
             protocolFees = 0;
-            receivedAmount = 0;
+            returnedCollateral = 0;
         }
 
         _updateMarket(
@@ -169,13 +164,13 @@ contract PerpsMarket is IPerpsMarket, Authorization {
         position.collateralInUsd = 0;
         position.sizeInToken = 0;
         position.realisedPnl += remainingCollateral <= pnlAbs
-            ? (Math.abs(totalPnl) > Math.abs(pnl) ? pnl : totalPnl)
+            ? (Math.abs(totalPnl) >= Math.abs(pnl) ? pnl : totalPnl)
             : totalPnl;
         position.paidFunding += remainingCollateral <= pnlAbs
-            ? (Math.abs(totalPnl) > Math.abs(pnl) ? int256(0) : pnl - totalPnl)
+            ? (Math.abs(totalPnl) >= Math.abs(pnl) ? int256(0) : pnl - totalPnl)
             : fundingPnl;
         position.latestInteractionFunding = market.lastFundingValue;
-        position.paidFees += paidFees;
+        position.paidFees += liquidationFees + protocolFees;
         position.isClose = true;
         position.isLiquidated = true;
 
@@ -188,15 +183,41 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             position.id
         );
 
+        emit PositionModified(
+            position.id,
+            position.account,
+            position.market,
+            position.collateralToken,
+            position.sizeInUsd,
+            position.sizeInToken,
+            position.collateralInUsd,
+            position.realisedPnl,
+            position.paidFunding,
+            position.latestInteractionFunding,
+            position.paidFees,
+            position.isLong,
+            position.isClose,
+            position.isLiquidated
+        );
+
+        emit PositionLiquidated(
+            position.id,
+            returnedCollateral,
+            protocolFees,
+            liquidationFees,
+            msg.sender
+        );
+
         perpsVault.settleTrade(position.account, pnl, protocolFees);
-        if (receivedAmount + executorFees > 0) {
+        if (returnedCollateral + liquidationFees > 0) {
             perpsVault.withdrawCollateral(
                 position.account,
-                receivedAmount + executorFees
+                returnedCollateral + liquidationFees
             );
         }
-        if (receivedAmount > 0) USDB.transfer(position.account, receivedAmount);
-        if (executorFees > 0) USDB.transfer(msg.sender, executorFees);
+        if (returnedCollateral > 0)
+            USDB.transfer(position.account, returnedCollateral);
+        if (liquidationFees > 0) USDB.transfer(msg.sender, liquidationFees);
     }
 
     function createOrder(
@@ -206,10 +227,15 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             markets[params.market].enable,
             "Market not available to trading"
         );
-        require(
-            params.collateralDeltaUsd > keeperFee,
-            "Collateral amount must be greater than keeper fee"
-        );
+        if (
+            (params.orderType == OrderType.MarketIncrease ||
+                params.orderType == OrderType.LimitIncrease)
+        ) {
+            require(
+                params.collateralDeltaUsd >= 10 * 1e18,
+                "Min collateral amount is 10"
+            );
+        }
 
         require(
             params.collateralToken == address(USDB),
@@ -312,7 +338,8 @@ contract PerpsMarket is IPerpsMarket, Authorization {
             position.latestInteractionFunding,
             position.paidFees,
             position.isLong,
-            position.isClose
+            position.isClose,
+            position.isLiquidated
         );
     }
 
