@@ -2,9 +2,10 @@
 pragma solidity 0.8.18;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Rebasing} from "./interfaces/IERC20Rebasing.sol";
+import {IBlastPoints} from "./interfaces/IBlastPoints.sol";
 import {ILiquidityVault} from "./interfaces/ILiquidityVault.sol";
 import {IPerpsVault} from "./interfaces/IPerpsVault.sol";
-import {IERC20Rebasing} from "./interfaces/IERC20Rebasing.sol";
 import {IPerpsVaultCallback} from "./interfaces/IPerpsVaultCallback.sol";
 import {IPerpsMarketCallback} from "./interfaces/IPerpsMarketCallback.sol";
 
@@ -29,14 +30,17 @@ contract PerpsVault is
     address perpsMarket;
     address yieldReceiver;
 
-    IERC20 public constant USDB =
-        IERC20(0x4300000000000000000000000000000000000003);
-    // IERC20(0x4200000000000000000000000000000000000022);
+    IERC20 public immutable USDB;
 
-    constructor(address _owner, address _yieldReceiver) {
-        IERC20Rebasing(address(USDB)).configure(
-            IERC20Rebasing.YieldMode.CLAIMABLE
-        );
+    constructor(
+        address _usdb,
+        address _blastPoints,
+        address _owner,
+        address _yieldReceiver
+    ) {
+        USDB = IERC20(_usdb);
+        IERC20Rebasing(_usdb).configure(IERC20Rebasing.YieldMode.CLAIMABLE);
+        IBlastPoints(_blastPoints).configurePointsOperator(_owner);
         _setRole(_owner, CONTRACT_OWNER_ROLE, true);
         yieldReceiver = _yieldReceiver;
     }

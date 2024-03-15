@@ -3,11 +3,10 @@ pragma solidity 0.8.18;
 
 interface IPerpsMarket {
     enum OrderType {
-        MarketIncrease,
-        LimitIncrease,
-        MarketDecrease,
-        LimitDecrease,
-        Liquidation
+        Liquidation,
+        Market,
+        Limit,
+        Stop
     }
 
     struct Market {
@@ -26,36 +25,34 @@ interface IPerpsMarket {
         uint256 id;
         address account;
         uint256 market;
-        address collateralToken;
+        bool isLong;
         uint256 sizeInUsd;
         uint256 sizeInToken;
         uint256 collateralInUsd;
+        uint256 sl;
+        uint256 tp;
+        uint256 paidFees;
         int256 realisedPnl;
         int256 paidFunding;
         int256 latestInteractionFunding;
-        uint256 paidFees;
-        bool isLong;
         bool isClose;
         bool isLiquidated;
     }
 
     struct Order {
-        uint256 id;
         address account;
         uint256 market;
-        address collateralToken;
-        OrderType orderType;
+        bool isLong;
+        bool isIncrease;
         uint256 sizeDeltaUsd;
         uint256 collateralDeltaUsd;
         uint256 triggerPrice;
         uint256 acceptablePrice;
         uint256 executionPrice;
-        uint256 protocolFees;
-        uint256 keeperFees;
+        uint256 orderFees;
+        uint256 executionFees;
         uint256 submissionTime;
-        uint256 executionTime;
-        bool isLong;
-        bool isFilled;
+        bool isExecuted;
         bool isCanceled;
     }
 
@@ -67,13 +64,12 @@ interface IPerpsMarket {
 
     struct CreateOrderParams {
         uint256 market;
-        address collateralToken;
         uint256 sizeDeltaUsd;
         uint256 collateralDeltaUsd;
         uint256 triggerPrice;
         uint256 acceptablePrice;
-        OrderType orderType;
         bool isLong;
+        bool isIncrease;
     }
 
     // struct ExecuteOrderParams {
@@ -85,15 +81,18 @@ interface IPerpsMarket {
 
     function createOrder(CreateOrderParams calldata params) external;
 
-    // function cancelOrder(uint256 id) external;
+    function cancelOrder(uint256 id) external;
 
-    // function executeOrder(uint256 id) external;
-
-    function getOrder(uint256 id) external view returns (Order memory);
+    function executeOrder(
+        uint256 id,
+        bytes[] calldata priceUpdateData
+    ) external payable;
 
     function getPosition(uint256 id) external view returns (Position memory);
 
-    function getOpenOrders(
+    function getOrder(uint256 id) external view returns (Order memory);
+
+    function getPendingOrders(
         address account
     ) external view returns (Order[] memory);
 
@@ -103,39 +102,40 @@ interface IPerpsMarket {
 
     function setKeeperFee(uint256 _keeperFee) external;
 
-    function setProtocolFee(uint256 _protocolFee) external;
+    function setProtocolFee(uint256 _orderFee) external;
 
-    function setEnableExchange(bool _enableExchange) external;
+    function setMinCollateral(uint256 _minCollateral) external;
+
+    function setMaxSize(uint256 _maxSize) external;
+
+    function setMaxLeverage(uint256 _maxLeverage) external;
 
     event OrderSubmitted(
         uint256 orderId,
-        OrderType orderType,
-        bool isLong,
         address account,
         uint256 market,
-        address collateralToken,
+        bool isLong,
         uint256 collateralDeltaUsd,
         uint256 sizeDeltaUsd,
         uint256 triggerPrice,
         uint256 acceptablePrice,
-        uint256 executionPrice,
-        uint256 protocolFees,
-        uint256 keeperFees
+        uint256 orderFees,
+        uint256 executionFees
     );
 
-    event OrderCanceled(uint256 orderId, uint256 executeTime);
+    event OrderCanceled(uint256 orderId, bytes32 reason);
 
     event OrderExecuted(
         uint256 orderId,
-        uint256 executePrice,
-        uint256 executeTime
+        uint256 executionPrice,
+        uint256 executionTime
     );
 
     event PositionModified(
         uint256 positionId,
         address account,
         uint256 market,
-        address collateralToken,
+        bool isLong,
         uint256 sizeInUsd,
         uint256 sizeInToken,
         uint256 collateralInUsd,
@@ -143,7 +143,6 @@ interface IPerpsMarket {
         int256 paidFunding,
         int256 latestInteractionFunding,
         uint256 paidFees,
-        bool isLong,
         bool isClose,
         bool isLiquidated
     );
@@ -151,8 +150,7 @@ interface IPerpsMarket {
     event PositionLiquidated(
         uint256 positionId,
         uint256 returnedCollateral,
-        uint256 protocolFees,
-        uint256 liquidationFees,
-        address executor
+        uint256 orderFees,
+        uint256 executionFees
     );
 }
