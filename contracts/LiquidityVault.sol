@@ -5,7 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Rebasing} from "./interfaces/IERC20Rebasing.sol";
 import {IBlastPoints} from "./interfaces/IBlastPoints.sol";
 import {ILiquidityVault} from "./interfaces/ILiquidityVault.sol";
-import {IPerpsVaultCallback} from "./interfaces/IPerpsVaultCallback.sol";
+import {IPerpsVaultIntegrated} from "./interfaces/IPerpsVaultIntegrated.sol";
 
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
@@ -103,7 +103,7 @@ contract LiquidityVault is
             USDB.transfer(perpsVault, Math.abs(delta));
         } else if (delta < 0) {
             uint256 balanceBefore = _balanceUSDB();
-            IPerpsVaultCallback(msg.sender).payCallback(Math.abs(delta));
+            IPerpsVaultIntegrated(msg.sender).payCallback(Math.abs(delta));
             require(
                 balanceBefore - Math.abs(delta) <= _balanceUSDB(),
                 "LiquidityVault: Balance mismatch"

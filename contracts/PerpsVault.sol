@@ -6,8 +6,8 @@ import {IERC20Rebasing} from "./interfaces/IERC20Rebasing.sol";
 import {IBlastPoints} from "./interfaces/IBlastPoints.sol";
 import {ILiquidityVault} from "./interfaces/ILiquidityVault.sol";
 import {IPerpsVault} from "./interfaces/IPerpsVault.sol";
-import {IPerpsVaultCallback} from "./interfaces/IPerpsVaultCallback.sol";
-import {IPerpsMarketCallback} from "./interfaces/IPerpsMarketCallback.sol";
+import {IPerpsVaultIntegrated} from "./interfaces/IPerpsVaultIntegrated.sol";
+import {IPerpsMarketIntegrated} from "./interfaces/IPerpsMarketIntegrated.sol";
 
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
@@ -17,27 +17,29 @@ import {Math} from "./utils/Math.sol";
 
 contract PerpsVault is
     IPerpsVault,
-    IPerpsVaultCallback,
+    IPerpsVaultIntegrated,
     Authorization,
     ReentrancyGuard
 {
     using Address for address;
     uint256 constant FACTOR = 10000;
 
-    mapping(address => uint256) _balances;
+    IERC20 public immutable USDB;
+    ILiquidityVault public immutable LIQUIDITY_VAULT;
 
-    ILiquidityVault liquidityVault;
     address perpsMarket;
     address yieldReceiver;
 
-    IERC20 public immutable USDB;
+    mapping(address => uint256) _balances;
 
     constructor(
+        address _liquidityVault,
         address _usdb,
         address _blastPoints,
         address _owner,
         address _yieldReceiver
     ) {
+        LIQUIDITY_VAULT = ILiquidityVault(_liquidityVault);
         USDB = IERC20(_usdb);
         IERC20Rebasing(_usdb).configure(IERC20Rebasing.YieldMode.CLAIMABLE);
         IBlastPoints(_blastPoints).configurePointsOperator(_owner);
@@ -47,7 +49,7 @@ contract PerpsVault is
 
     modifier onlyLiquidityVault() {
         require(
-            address(liquidityVault) == msg.sender,
+            address(LIQUIDITY_VAULT) == msg.sender,
             "PerpsVault: Only LiquidityVault"
         );
         _;
@@ -75,7 +77,7 @@ contract PerpsVault is
     ) external nonReentrant onlyPerpsMarket {
         require(_amount > 0, "PerpsVault: Invalid amount");
         uint256 balanceBefore = _balanceUSDB();
-        IPerpsMarketCallback(perpsMarket).depositCollateralCallback(_amount);
+        IPerpsMarketIntegrated(perpsMarket).depositCollateralCallback(_amount);
         require(
             balanceBefore + _amount <= _balanceUSDB(),
             "PerpsVault: Balance mismatch"
@@ -118,11 +120,11 @@ contract PerpsVault is
         } else if (amount < 0) {
             _balances[_account] -= Math.abs(amount);
         }
-        liquidityVault.settleTrade(_pnl, _fees);
+        LIQUIDITY_VAULT.settleTrade(_pnl, _fees);
     }
 
     function payCallback(uint256 amount) external onlyLiquidityVault {
-        USDB.transfer(address(liquidityVault), amount);
+        USDB.transfer(address(LIQUIDITY_VAULT), amount);
     }
 
     // =====================================================================
@@ -136,18 +138,6 @@ contract PerpsVault is
     // =====================================================================
     // Setter
     // =====================================================================
-
-    function setLiquidityVault(
-        address _liquidityVault
-    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
-        // TODO: enable again
-        // require(
-        //     address(liquidityVault) == address(0),
-        //     "PerpsVault: Already set"
-        // );
-        liquidityVault = ILiquidityVault(_liquidityVault);
-        emit LiquidityVaultSetted(_liquidityVault);
-    }
 
     function setPerpsMarket(
         address _perpsMarket

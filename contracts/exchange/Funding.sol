@@ -4,12 +4,12 @@ pragma solidity 0.8.18;
 import {IPerpsMarket} from "../interfaces/IPerpsMarket.sol";
 
 import {Authorization} from "../securities/Authorization.sol";
-import {Math} from "./Math.sol";
+import {Math} from "../utils/Math.sol";
 import "../interfaces/IPerpsMarket.sol";
 
 library Funding {
     function calculateNextFunding(
-        IPerpsMarket.Market storage market,
+        IPerpsMarket.Market memory market,
         uint price
     ) internal view returns (int nextFunding) {
         nextFunding =
@@ -18,7 +18,7 @@ library Funding {
     }
 
     function unrecordedFunding(
-        IPerpsMarket.Market storage market,
+        IPerpsMarket.Market memory market,
         uint price
     ) internal view returns (int) {
         int fundingRate = currentFundingRate(market);
@@ -31,7 +31,7 @@ library Funding {
     }
 
     function currentFundingRate(
-        IPerpsMarket.Market storage market
+        IPerpsMarket.Market memory market
     ) internal view returns (int) {
         // calculations:
         //  - velocity          = proportional_skew * max_funding_velocity
@@ -58,8 +58,8 @@ library Funding {
     }
 
     function currentFundingVelocity(
-        IPerpsMarket.Market storage market
-    ) internal view returns (int) {
+        IPerpsMarket.Market memory market
+    ) internal pure returns (int) {
         int maxFundingVelocity = 9000000000000000000;
         int skewScale = 100000000000000000000000;
         // Avoid a panic due to div by zero. Return 0 immediately.
@@ -73,7 +73,7 @@ library Funding {
     }
 
     function proportionalElapsed(
-        IPerpsMarket.Market storage market
+        IPerpsMarket.Market memory market
     ) internal view returns (int) {
         // even though timestamps here are not D18, divDecimal multiplies by 1e18 to preserve decimals into D18
         return
@@ -81,7 +81,7 @@ library Funding {
     }
 
     function getAccruedFunding(
-        IPerpsMarket.Market storage market,
+        IPerpsMarket.Market memory market,
         IPerpsMarket.Position memory position,
         uint price
     ) internal view returns (int accruedFunding) {

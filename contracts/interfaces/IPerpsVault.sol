@@ -4,6 +4,8 @@ pragma solidity 0.8.18;
 interface IPerpsVault {
     event LiquidityVaultSetted(address liquidityVault);
 
+    event OiLiqRatioSetted(uint256 oiLiqRatio);
+
     event PerpsMarketSetted(address perpsMarket);
 
     event DepositCollateral(address sender, uint256 value);

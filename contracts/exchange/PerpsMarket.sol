@@ -9,19 +9,19 @@ import {IPerpsVault} from "../interfaces/IPerpsVault.sol";
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {Authorization} from "../securities/Authorization.sol";
-import {Funding} from "../utils/Funding.sol";
+import {Funding} from "./Funding.sol";
 import {Math} from "../utils/Math.sol";
 import "../interfaces/IPerpsMarket.sol";
 
 contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
     uint256 public constant FACTOR = 10000;
+    uint256 public constant LIQUIDATE_PERCENT = 90;
 
     IERC20 public immutable USDB;
     IPyth public immutable PYTH;
     IPerpsVault public immutable PERPS_VAULT;
 
     uint256 public minCollateral = 10 * 1e18;
-    uint256 public maxSize = 10000 * 1e18;
     uint256 public maxLeverage = 50;
     uint256 public keeperFee = 1 * 1e18;
     uint256 public orderFee = 5;
@@ -58,15 +58,9 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         _;
     }
 
-    function getPrice(
-        uint256 marketId
-    ) public view returns (uint256 currentPrice, uint256 executionTime) {
-        Market memory market = markets[marketId];
-        require(market.priceFeedId != "0", "Price feed not set");
-        PythStructs.Price memory price = PYTH.getPrice(market.priceFeedId);
-        currentPrice = _convertToUint(price, 18);
-        executionTime = price.publishTime;
-    }
+    // =====================================================================
+    // Main functions
+    // =====================================================================
 
     function depositCollateralCallback(
         uint256 _amount
@@ -80,40 +74,194 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         require(params.id != 0, "Require id");
         Market storage market = markets[params.id];
         require(market.id == 0, "Market is exist");
+        require(market.priceFeedId != "0", "Price feed not set");
         market.id = params.id;
         market.symbol = params.symbol;
         market.priceFeedId = params.priceFeedId;
+        market.maxSkew = params.maxSkew; // 0: unlimited
         market.enable = true;
+
+        emit MarketCreated(
+            market.id,
+            market.symbol,
+            market.priceFeedId,
+            market.maxSkew,
+            market.enable
+        );
     }
 
-    function setKeeperFee(
-        uint256 _keeperFee
+    function updateMarketSettings(
+        uint256 _id,
+        uint256 _maxSkew,
+        bool _enable
     ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
-        keeperFee = _keeperFee;
+        Market storage market = markets[_id];
+        require(market.id != 0, "Market is not exist");
+        market.maxSkew = _maxSkew; // 0: unlimited
+        market.enable = _enable;
+        emit MarketUpdated(_id, _maxSkew, _enable);
     }
 
-    function setProtocolFee(
-        uint256 _orderFee
-    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
-        orderFee = _orderFee;
+    function createOrder(
+        CreateOrderParams calldata params
+    ) external nonReentrant {
+        bytes32 positionKey = keccak256(
+            abi.encode(msg.sender, params.market, params.isLong)
+        );
+        uint256 flagId = openingPositionFlag[positionKey];
+        Position memory position = positions[flagId];
+        if (params.isIncrease) {
+            Market memory market = markets[params.market];
+            require(market.enable, "Market is not available for trading");
+            require(
+                params.collateralDeltaUsd >= minCollateral,
+                "Under min collateral"
+            );
+
+            if (market.maxSkew != 0) {
+                PythStructs.Price memory price = PYTH.getPriceUnsafe(
+                    market.priceFeedId
+                );
+                uint256 currentPrice = _convertToUint(price, 18);
+                int256 sizeInToken = int256(
+                    (params.sizeDeltaUsd * 1e18) / currentPrice
+                );
+                // maxSkew available
+                require(
+                    market.skew > 0
+                        ? (!params.isLong ||
+                            Math.abs(market.skew + sizeInToken) <=
+                            market.maxSkew)
+                        : (params.isLong ||
+                            Math.abs(market.skew + sizeInToken) <=
+                            market.maxSkew),
+                    "Over max market skew"
+                );
+            }
+
+            uint256 leverage = (position.sizeInUsd + params.sizeDeltaUsd) /
+                (position.collateralInUsd + params.collateralDeltaUsd);
+            require(
+                leverage <= maxLeverage && leverage >= 1,
+                "Leverage invalid"
+            );
+        } else {
+            require(
+                (position.sizeInUsd - params.sizeDeltaUsd) /
+                    (position.collateralInUsd - params.collateralDeltaUsd) <=
+                    maxLeverage,
+                "Leverage invalid"
+            );
+        }
+
+        uint256 orderFees = (params.sizeDeltaUsd * orderFee) / FACTOR;
+
+        Order memory order;
+        order.account = msg.sender;
+        order.market = params.market;
+        order.sizeDeltaUsd = params.sizeDeltaUsd;
+        order.collateralDeltaUsd = params.isIncrease
+            ? params.collateralDeltaUsd - orderFees - keeperFee
+            : params.collateralDeltaUsd;
+        order.executionFees = keeperFee;
+        order.triggerPrice = params.triggerPrice;
+        order.acceptablePrice = params.acceptablePrice;
+        order.isLong = params.isLong;
+        order.isIncrease = params.isIncrease;
+        order.orderFees = orderFees;
+        order.submissionTime = block.timestamp;
+
+        emit OrderSubmitted(
+            orderId,
+            order.account,
+            order.market,
+            order.isLong,
+            order.collateralDeltaUsd,
+            order.sizeDeltaUsd,
+            order.triggerPrice,
+            order.acceptablePrice,
+            order.orderFees,
+            order.executionFees
+        );
+
+        accountPendingOrders[msg.sender].push(orderId);
+        orderId++;
     }
 
-    function setMinCollateral(
-        uint256 _minCollateral
-    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
-        minCollateral = _minCollateral;
+    function cancelOrder(uint256 _id) external nonReentrant {
+        Order memory order = _verifyPendingOrder(_id);
+        require(order.account == msg.sender, "Unauthorized");
+        _cancelOrder(_id, order, "MANUAL");
     }
 
-    function setMaxSize(
-        uint256 _maxSize
-    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
-        maxSize = _maxSize;
-    }
+    function executeOrder(
+        uint256 _id,
+        bytes[] calldata _priceUpdateData
+    ) external payable nonReentrant {
+        Order memory order = _verifyPendingOrder(_id);
 
-    function setMaxLeverage(
-        uint256 _maxLeverage
-    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
-        maxLeverage = _maxLeverage;
+        PYTH.updatePriceFeeds{value: msg.value}(_priceUpdateData);
+        (uint256 currentPrice, uint256 executionTime) = getPrice(order.market);
+
+        require(executionTime > order.submissionTime, "not yet");
+        if (
+            order.triggerPrice == 0 &&
+            block.timestamp - order.submissionTime > 60
+        ) {
+            _cancelOrder(_id, order, "MANUAL");
+            if (order.executionFees > 0) {
+                USDB.transferFrom(
+                    order.account,
+                    address(this),
+                    order.executionFees
+                );
+                USDB.transfer(msg.sender, order.executionFees);
+            }
+            return;
+        }
+        require(
+            (order.isLong && currentPrice <= order.acceptablePrice) ||
+                (!order.isLong && currentPrice >= order.acceptablePrice),
+            "Cannot fill order"
+        );
+
+        _removeFromArrayByValue(accountPendingOrders[order.account], _id);
+        orders[_id].isExecuted = true;
+
+        Funding.recomputeFunding(markets[order.market], currentPrice);
+
+        bytes32 positionKey = keccak256(
+            abi.encode(order.account, order.market, order.isLong)
+        );
+
+        uint256 flagId = openingPositionFlag[positionKey];
+        if (order.isIncrease && flagId == 0) {
+            flagId = positionId;
+        }
+        Position storage position = positions[flagId];
+
+        if (order.isIncrease) {
+            _increasePosition(positionKey, position, order, currentPrice);
+        } else {
+            _decreasePosition(positionKey, position, order, currentPrice);
+        }
+
+        emit OrderExecuted(_id, currentPrice, executionTime);
+        emit PositionModified(
+            position.id,
+            position.account,
+            position.market,
+            position.isLong,
+            position.sizeInUsd,
+            position.sizeInToken,
+            position.collateralInUsd,
+            position.realisedPnl,
+            position.paidFunding,
+            position.latestInteractionFunding,
+            position.paidFees,
+            position.isClose,
+            position.isLiquidated
+        );
     }
 
     function liquidate(uint256 _positionId) external nonReentrant {
@@ -124,43 +272,26 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
 
         Market storage market = markets[position.market];
 
-        (uint256 currentPrice, ) = getPrice(position.market);
+        (
+            uint256 collateralInUsd,
+            ,
+            int256 positionPnl,
+            int256 fundingPnl
+        ) = calculatePosition(position.id);
 
-        int256 fundingPnl = Funding.getAccruedFunding(
-            market,
-            position,
-            currentPrice
-        );
-
-        uint256 currentPositionSizeInUsd = (position.sizeInToken *
-            currentPrice) / 10 ** 18;
-
-        //PnL
-        int256 totalPnl = position.isLong
-            ? int256(currentPositionSizeInUsd) - int256(position.sizeInUsd)
-            : int256(position.sizeInUsd) - int256(currentPositionSizeInUsd);
-
-        uint256 pnlAbs = Math.abs(totalPnl + fundingPnl);
+        uint256 totalPnl = Math.abs(positionPnl + fundingPnl);
 
         require(
-            totalPnl + fundingPnl < 0 &&
-                pnlAbs >= (position.collateralInUsd * 90) / 100,
+            positionPnl + fundingPnl < 0 &&
+                totalPnl >= (collateralInUsd * LIQUIDATE_PERCENT) / 100,
             "Cannot liquidate"
         );
 
-        uint256 remainingCollateral = position.collateralInUsd;
-        int256 pnl = remainingCollateral <= pnlAbs
-            ? int256(remainingCollateral) * -1
-            : (totalPnl + fundingPnl);
-        uint256 returnedCollateral = remainingCollateral <= pnlAbs
-            ? 0
-            : remainingCollateral - pnlAbs;
-
-        uint256 executionFees;
+        uint256 returnedCollateral = collateralInUsd;
+        uint256 executionFees = keeperFee * 2;
         uint256 orderFees = (position.sizeInUsd * orderFee) / FACTOR;
-        if (returnedCollateral > keeperFee) {
-            returnedCollateral -= keeperFee;
-            executionFees = keeperFee;
+        if (returnedCollateral > executionFees) {
+            returnedCollateral -= executionFees;
             if (returnedCollateral > orderFees) {
                 returnedCollateral -= orderFees;
             } else {
@@ -173,7 +304,13 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
             returnedCollateral = 0;
         }
 
-        _updateMarket(
+        int256 pnl = returnedCollateral <= totalPnl
+            ? int256(returnedCollateral) * -1
+            : (positionPnl + fundingPnl);
+
+        returnedCollateral -= Math.abs(pnl);
+
+        _updateMarketSize(
             market,
             position.isLong
                 ? int256(position.sizeInToken) * -1
@@ -183,12 +320,18 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         position.sizeInUsd = 0;
         position.collateralInUsd = 0;
         position.sizeInToken = 0;
-        position.realisedPnl += remainingCollateral <= pnlAbs
-            ? (Math.abs(totalPnl) >= Math.abs(pnl) ? pnl : totalPnl)
-            : totalPnl;
-        position.paidFunding += remainingCollateral <= pnlAbs
-            ? (Math.abs(totalPnl) >= Math.abs(pnl) ? int256(0) : pnl - totalPnl)
-            : fundingPnl;
+        position.realisedPnl += returnedCollateral > 0
+            ? positionPnl
+            : (Math.abs(positionPnl) >= Math.abs(pnl) ? pnl : positionPnl);
+
+        position.paidFunding += returnedCollateral > 0
+            ? fundingPnl
+            : (
+                Math.abs(positionPnl) >= Math.abs(pnl)
+                    ? int256(0)
+                    : pnl - positionPnl
+            );
+
         position.latestInteractionFunding = market.lastFundingValue;
         position.paidFees += executionFees + orderFees;
         position.isClose = true;
@@ -238,146 +381,75 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         if (executionFees > 0) USDB.transfer(msg.sender, executionFees);
     }
 
-    function createOrder(
-        CreateOrderParams calldata params
-    ) external nonReentrant {
+    function updateSltp(
+        uint256 _positionId,
+        uint256 _sl,
+        uint256 _tp
+    ) external {
+        Position storage position = positions[_positionId];
+        require(position.id != 0, "Position is not exist");
+        require(position.account == msg.sender, "Unauthorized");
+        require(!position.isClose, "Position has been closed");
+        Market memory market = markets[position.market];
+        PythStructs.Price memory price = PYTH.getPriceUnsafe(
+            market.priceFeedId
+        );
+        uint256 currentPrice = _convertToUint(price, 18);
         require(
-            markets[params.market].enable,
-            "Market not available to trading"
+            _tp == 0 ||
+                (position.isLong ? _tp > currentPrice : _tp < currentPrice),
+            "Invalid take profit"
+        );
+        require(
+            _sl == 0 ||
+                (position.isLong ? _sl < currentPrice : _sl > currentPrice),
+            "Invalid stop loss"
+        );
+        position.sl = _sl;
+        position.tp = _tp;
+    }
+
+    function executeSltp(
+        uint256 _positionId,
+        bytes[] calldata _priceUpdateData
+    ) external payable {
+        Position storage position = positions[_positionId];
+        require(position.id != 0, "Position is not exist");
+        require(!position.isClose, "Position has been closed");
+        require(position.tp != 0 || position.sl != 0, "Need SL / TP");
+        PYTH.updatePriceFeeds{value: msg.value}(_priceUpdateData);
+        (uint256 currentPrice, uint256 executionTime) = getPrice(
+            position.market
+        );
+
+        require(
+            (position.tp > 0 &&
+                (
+                    position.isLong
+                        ? position.tp <= currentPrice
+                        : position.tp >= currentPrice
+                )) ||
+                (position.sl > 0 &&
+                    (
+                        position.isLong
+                            ? position.sl >= currentPrice
+                            : position.sl <= currentPrice
+                    )),
+            "Cannot execute"
         );
 
         bytes32 positionKey = keccak256(
-            abi.encode(msg.sender, params.market, params.isLong)
+            abi.encode(position.account, position.market, position.isLong)
         );
-
-        uint256 flagId = openingPositionFlag[positionKey];
-
-        Position memory position = positions[flagId];
-        if (params.isIncrease) {
-            require(
-                params.collateralDeltaUsd >= minCollateral,
-                "Need more collateral amount"
-            );
-
-            require(
-                position.sizeInUsd + params.sizeDeltaUsd <= maxSize,
-                "Over max size"
-            );
-            require(
-                (position.sizeInUsd + params.sizeDeltaUsd) /
-                    (position.collateralInUsd + params.collateralDeltaUsd) <=
-                    maxLeverage,
-                "Over max leverage"
-            );
-        } else {
-            require(
-                (position.sizeInUsd - params.sizeDeltaUsd) /
-                    (position.collateralInUsd - params.collateralDeltaUsd) <=
-                    maxLeverage,
-                "Over max leverage"
-            );
-        }
-
-        uint256 orderFees = (params.sizeDeltaUsd * orderFee) / FACTOR;
-
         Order memory order;
-        order.account = msg.sender;
-        order.market = params.market;
-        order.sizeDeltaUsd = params.sizeDeltaUsd;
-        order.collateralDeltaUsd =
-            params.collateralDeltaUsd -
-            orderFees -
-            keeperFee;
-        order.executionFees = keeperFee;
-        order.triggerPrice = params.triggerPrice;
-        order.acceptablePrice = params.acceptablePrice;
-        order.isLong = params.isLong;
-        order.isIncrease = params.isIncrease;
-        order.orderFees = orderFees;
-        order.submissionTime = block.timestamp;
+        order.sizeDeltaUsd = position.sizeInUsd;
+        order.collateralDeltaUsd = position.collateralInUsd;
+        order.executionFees = 2 * keeperFee;
+        order.orderFees = (position.sizeInUsd * orderFee) / FACTOR;
 
-        emit OrderSubmitted(
-            order.triggerPrice == 0 ? 0 : orderId,
-            order.account,
-            order.market,
-            order.isLong,
-            order.collateralDeltaUsd,
-            order.sizeDeltaUsd,
-            order.triggerPrice,
-            order.acceptablePrice,
-            order.orderFees,
-            order.executionFees
-        );
+        _decreasePosition(positionKey, position, order, currentPrice);
 
-        if (params.triggerPrice == 0) {} else {}
-
-        accountPendingOrders[msg.sender].push(orderId);
-    }
-
-    function cancelOrder(uint256 id) external nonReentrant {
-        Order memory order = verifyPendingOrder(id);
-        require(order.account == msg.sender, "Unauthorized");
-
-        _removeFromArrayByValue(accountPendingOrders[order.account], id);
-        orders[id].isCanceled = true;
-        emit OrderCanceled(id, "MANUAL");
-    }
-
-    function executeOrder(
-        uint256 id,
-        bytes[] calldata priceUpdateData
-    ) external payable nonReentrant {
-        Order memory order = verifyPendingOrder(id);
-
-        PYTH.updatePriceFeeds{value: msg.value}(priceUpdateData);
-
-        (uint256 currentPrice, uint256 executionTime) = getPrice(order.market);
-
-        require(executionTime > order.submissionTime, "not yet");
-
-        if (
-            order.triggerPrice == 0 &&
-            block.timestamp - order.submissionTime > 60
-        ) {
-            _removeFromArrayByValue(accountPendingOrders[order.account], id);
-            orders[id].isCanceled = true;
-
-            if (order.executionFees > 0) {
-                USDB.transferFrom(
-                    order.account,
-                    address(this),
-                    order.executionFees
-                );
-                USDB.transfer(msg.sender, order.executionFees);
-            }
-
-            emit OrderCanceled(id, "EXPIRED");
-            return;
-        }
-
-        require(
-            (order.isLong && currentPrice <= order.acceptablePrice) ||
-                (!order.isLong && currentPrice >= order.acceptablePrice),
-            "Cannot fill order"
-        );
-
-        _removeFromArrayByValue(accountPendingOrders[order.account], id);
-        orders[id].isExecuted = true;
-
-        Funding.recomputeFunding(markets[order.market], currentPrice);
-
-        Position memory position;
-        bytes32 positionKey = keccak256(
-            abi.encode(order.account, order.market, order.isLong)
-        );
-
-        if (order.isIncrease) {
-            position = increasePosition(positionKey, order, currentPrice);
-        } else {
-            position = decreasePosition(positionKey, order, currentPrice);
-        }
-
-        emit OrderExecuted(id, currentPrice, executionTime);
+        emit SltpExecuted(position.id, currentPrice, executionTime);
         emit PositionModified(
             position.id,
             position.account,
@@ -395,17 +467,129 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         );
     }
 
-    function increasePosition(
+    // =====================================================================
+    // Getters
+    // =====================================================================
+
+    function getPrice(
+        uint256 _marketId
+    ) public view returns (uint256 currentPrice, uint256 executionTime) {
+        Market memory market = markets[_marketId];
+        PythStructs.Price memory price = PYTH.getPrice(market.priceFeedId);
+        currentPrice = _convertToUint(price, 18);
+        executionTime = price.publishTime;
+    }
+
+    function calculatePosition(
+        uint256 _positionId
+    )
+        public
+        view
+        returns (
+            uint256 collateralInUsd,
+            uint256 sizeInUsd,
+            int256 positionPnl,
+            int256 fundingPnl
+        )
+    {
+        Position memory position = positions[_positionId];
+        Market memory market = markets[position.market];
+        (uint256 currentPrice, ) = getPrice(position.market);
+
+        collateralInUsd = position.collateralInUsd;
+        sizeInUsd = (position.sizeInToken * currentPrice) / 10 ** 18;
+        fundingPnl = Funding.getAccruedFunding(market, position, currentPrice);
+        positionPnl = position.isLong
+            ? int256(sizeInUsd) - int256(position.sizeInUsd)
+            : int256(position.sizeInUsd) - int256(sizeInUsd);
+    }
+
+    function canLiquidate(uint256 _positionId) public view returns (bool) {
+        (
+            uint256 collateralInUsd,
+            ,
+            int256 positionPnl,
+            int256 fundingPnl
+        ) = calculatePosition(_positionId);
+
+        uint256 totalPnl = Math.abs(positionPnl + fundingPnl);
+        return
+            positionPnl + fundingPnl < 0 &&
+            totalPnl >= (collateralInUsd * LIQUIDATE_PERCENT) / 100;
+    }
+
+    function getMarket(uint256 _id) external view returns (Market memory) {
+        return markets[_id];
+    }
+
+    function getPosition(uint256 _id) external view returns (Position memory) {
+        return positions[_id];
+    }
+
+    function getOrder(uint256 _id) external view returns (Order memory) {
+        return orders[_id];
+    }
+
+    function getOpenPositions(
+        address _acccount
+    ) external view returns (Position[] memory) {
+        uint256[] memory positionIds = accountOpenPositions[_acccount];
+        Position[] memory _positions = new Position[](positionIds.length);
+        for (uint256 i = 0; i < positionIds.length; i++) {
+            _positions[i] = positions[positionIds[i]];
+        }
+        return _positions;
+    }
+
+    function getPendingOrders(
+        address _acccount
+    ) external view returns (Order[] memory) {
+        uint256[] memory orderIds = accountPendingOrders[_acccount];
+        Order[] memory _orders = new Order[](orderIds.length);
+        for (uint256 i = 0; i < orderIds.length; i++) {
+            _orders[i] = orders[orderIds[i]];
+        }
+        return _orders;
+    }
+
+    // =====================================================================
+    // Setters
+    // =====================================================================
+
+    function setKeeperFee(
+        uint256 _keeperFee
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
+        keeperFee = _keeperFee;
+    }
+
+    function setProtocolFee(
+        uint256 _orderFee
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
+        orderFee = _orderFee;
+    }
+
+    function setMinCollateral(
+        uint256 _minCollateral
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
+        minCollateral = _minCollateral;
+    }
+
+    function setMaxLeverage(
+        uint256 _maxLeverage
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
+        maxLeverage = _maxLeverage;
+    }
+
+    // =====================================================================
+    // Internal functions
+    // =====================================================================
+
+    function _increasePosition(
         bytes32 positionKey,
+        Position storage position,
         Order memory order,
         uint256 executionPrice
     ) internal returns (Position memory) {
-        uint256 flagId = openingPositionFlag[positionKey];
-        if (flagId == 0) {
-            flagId = positionId;
-        }
-        Position storage position = positions[flagId];
-
         USDB.transferFrom(
             order.account,
             address(this),
@@ -432,7 +616,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
             position.paidFees = order.orderFees;
             openingPositionFlag[positionKey] = positionId;
             accountOpenPositions[position.account].push(positionId);
-            positionId += 1;
+            positionId++;
         } else {
             require(!position.isLiquidated, "Position is liquidated");
             position.sizeInUsd += order.sizeDeltaUsd;
@@ -442,7 +626,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         }
 
         Market storage market = markets[position.market];
-        _updateMarket(
+        _updateMarketSize(
             market,
             position.isLong
                 ? int256(increaseSizeDeltaToken)
@@ -454,14 +638,12 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         return position;
     }
 
-    function decreasePosition(
+    function _decreasePosition(
         bytes32 positionKey,
+        Position storage position,
         Order memory order,
         uint256 executionPrice
-    ) internal returns (Position memory) {
-        uint256 flagId = openingPositionFlag[positionKey];
-        Position storage position = positions[flagId];
-
+    ) internal {
         require(position.id > 0, "No open position found");
         require(!position.isLiquidated, "Position is liquidated");
         Market storage market = markets[position.market];
@@ -486,16 +668,16 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
             executionPrice) / 10 ** 18;
 
         //PnL
-        int256 totalPnl = position.isLong
+        int256 positionPnl = position.isLong
             ? int256(currentPositionSizeInUsd) - int256(position.sizeInUsd)
             : int256(position.sizeInUsd) - int256(currentPositionSizeInUsd);
-        int256 realisedPnl = (totalPnl * int256(decreaseSizeDeltaToken)) /
+        int256 realisedPnl = (positionPnl * int256(decreaseSizeDeltaToken)) /
             int256(position.sizeInToken);
 
-        if (totalPnl + fundingPnl < 0) {
+        if (positionPnl + fundingPnl < 0) {
             require(
-                Math.abs(totalPnl + fundingPnl) <
-                    (position.collateralInUsd * 90) / 100,
+                Math.abs(positionPnl + fundingPnl) <
+                    (position.collateralInUsd * LIQUIDATE_PERCENT) / 100,
                 "Position has been set to be liquidated"
             );
         }
@@ -509,7 +691,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         position.latestInteractionFunding = market.lastFundingValue;
         position.paidFees += order.orderFees;
 
-        _updateMarket(
+        _updateMarketSize(
             market,
             position.isLong
                 ? int256(decreaseSizeDeltaToken) * -1
@@ -535,58 +717,37 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
             if (Math.abs(pnl) > position.collateralInUsd)
                 receivedAmount -= Math.abs(pnl);
         }
-        PERPS_VAULT.settleTrade(order.account, pnl, order.orderFees);
-        PERPS_VAULT.withdrawCollateral(order.account, receivedAmount);
+        PERPS_VAULT.settleTrade(position.account, pnl, order.orderFees);
+        PERPS_VAULT.withdrawCollateral(position.account, receivedAmount);
         if (order.executionFees > 0)
             USDB.transfer(msg.sender, order.executionFees);
-        USDB.transfer(order.account, receivedAmount - order.executionFees);
-
-        return position;
+        USDB.transfer(position.account, receivedAmount - order.executionFees);
     }
 
-    function getMarket(uint256 id) external view returns (Market memory) {
-        return markets[id];
+    function _cancelOrder(
+        uint256 id,
+        Order memory order,
+        bytes32 reason
+    ) internal {
+        orders[id].isCanceled = true;
+        _removeFromArrayByValue(accountPendingOrders[order.account], id);
+        emit OrderCanceled(id, reason);
     }
 
-    function getPosition(uint256 id) external view returns (Position memory) {
-        return positions[id];
-    }
-
-    function getOrder(uint256 id) external view returns (Order memory) {
-        return orders[id];
-    }
-
-    function getOpenPositions(
-        address acccount
-    ) external view returns (Position[] memory) {
-        uint256[] memory positionIds = accountOpenPositions[acccount];
-        Position[] memory _positions = new Position[](positionIds.length);
-        for (uint256 i = 0; i < positionIds.length; i++) {
-            _positions[i] = positions[positionIds[i]];
-        }
-        return _positions;
-    }
-
-    function getPendingOrders(
-        address acccount
-    ) external view returns (Order[] memory) {
-        uint256[] memory orderIds = accountPendingOrders[acccount];
-        Order[] memory _orders = new Order[](orderIds.length);
-        for (uint256 i = 0; i < orderIds.length; i++) {
-            _orders[i] = orders[orderIds[i]];
-        }
-        return _orders;
-    }
-
-    function verifyPendingOrder(
+    function _verifyPendingOrder(
         uint256 id
     ) internal view returns (Order memory) {
         Order memory order = orders[id];
         require(order.account != address(0), "Order is not exist");
+        require(!order.isCanceled, "Order has been canceled");
+        require(!order.isExecuted, "Order has been executed");
         return order;
     }
 
-    function _updateMarket(Market storage market, int256 sizeDelta) internal {
+    function _updateMarketSize(
+        Market storage market,
+        int256 sizeDelta
+    ) internal {
         market.size += Math.abs(sizeDelta);
         market.skew += sizeDelta;
     }

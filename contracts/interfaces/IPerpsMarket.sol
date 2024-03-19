@@ -12,13 +12,14 @@ interface IPerpsMarket {
     struct Market {
         uint256 id;
         string symbol;
+        bytes32 priceFeedId;
+        uint256 maxSkew;
+        bool enable;
         uint256 size;
         int256 skew;
         int256 lastFundingRate;
         int256 lastFundingValue;
         uint256 lastFundingTime;
-        bytes32 priceFeedId;
-        bool enable;
     }
 
     struct Position {
@@ -60,6 +61,7 @@ interface IPerpsMarket {
         uint256 id;
         string symbol;
         bytes32 priceFeedId;
+        uint256 maxSkew;
     }
 
     struct CreateOrderParams {
@@ -72,12 +74,13 @@ interface IPerpsMarket {
         bool isIncrease;
     }
 
-    // struct ExecuteOrderParams {
-    //     uint256 id;
-    //     uint256 minOracleBlockNumbers;
-    //     uint256 maxOracleBlockNumbers;
-    //     address keeper;
-    // }
+    function createMarket(CreateMarketParams calldata params) external;
+
+    function updateMarketSettings(
+        uint256 _id,
+        uint256 _maxSkew,
+        bool _enable
+    ) external;
 
     function createOrder(CreateOrderParams calldata params) external;
 
@@ -106,9 +109,17 @@ interface IPerpsMarket {
 
     function setMinCollateral(uint256 _minCollateral) external;
 
-    function setMaxSize(uint256 _maxSize) external;
-
     function setMaxLeverage(uint256 _maxLeverage) external;
+
+    event MarketCreated(
+        uint256 marketId,
+        string symbol,
+        bytes32 priceFeedId,
+        uint256 maxSkew,
+        bool enable
+    );
+
+    event MarketUpdated(uint256 marketId, uint256 maxSkew, bool enable);
 
     event OrderSubmitted(
         uint256 orderId,
@@ -127,6 +138,12 @@ interface IPerpsMarket {
 
     event OrderExecuted(
         uint256 orderId,
+        uint256 executionPrice,
+        uint256 executionTime
+    );
+
+    event SltpExecuted(
+        uint256 positionId,
         uint256 executionPrice,
         uint256 executionTime
     );
