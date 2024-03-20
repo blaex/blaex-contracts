@@ -87,9 +87,18 @@ interface IPerpsMarket {
     function cancelOrder(uint256 id) external;
 
     function executeOrder(
-        uint256 id,
-        bytes[] calldata priceUpdateData
+        uint256 _id,
+        bytes[] calldata _priceUpdateData
     ) external payable;
+
+    function executeSltp(
+        uint256 _positionId,
+        bytes[] calldata _priceUpdateData
+    ) external payable;
+
+    function indexPrice(
+        uint256 marketId
+    ) external view returns (uint256 currentPrice);
 
     function getPosition(uint256 id) external view returns (Position memory);
 
@@ -105,9 +114,11 @@ interface IPerpsMarket {
 
     function setKeeperFee(uint256 _keeperFee) external;
 
-    function setProtocolFee(uint256 _orderFee) external;
+    function setOrderFee(uint256 _orderFee) external;
 
     function setMinCollateral(uint256 _minCollateral) external;
+
+    function setMaxCollateral(uint256 _minCollateral) external;
 
     function setMaxLeverage(uint256 _maxLeverage) external;
 
@@ -120,6 +131,16 @@ interface IPerpsMarket {
     );
 
     event MarketUpdated(uint256 marketId, uint256 maxSkew, bool enable);
+
+    event KeeperFeeChanged(uint256 keeperFee);
+
+    event OrderFeeChanged(uint256 orderFee);
+
+    event MinCollateralChanged(uint256 minCollateral);
+
+    event MaxCollateralChanged(uint256 maxCollateral);
+
+    event MaxLeverageChanged(uint256 maxLeverage);
 
     event OrderSubmitted(
         uint256 orderId,
@@ -141,6 +162,8 @@ interface IPerpsMarket {
         uint256 executionPrice,
         uint256 executionTime
     );
+
+    event SltpUpdated(uint256 positionId, uint256 sl, uint256 tp);
 
     event SltpExecuted(
         uint256 positionId,

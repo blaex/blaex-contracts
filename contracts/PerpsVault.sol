@@ -69,6 +69,7 @@ contract PerpsVault is
             address(this)
         );
         IERC20Rebasing(address(USDB)).claim(yieldReceiver, yield);
+        emit YieldClaimed(yieldReceiver, yield);
     }
 
     function depositCollateral(

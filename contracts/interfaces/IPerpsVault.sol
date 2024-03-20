@@ -12,6 +12,8 @@ interface IPerpsVault {
 
     event WithdrawCollateral(address receiver, uint256 value);
 
+    event YieldClaimed(address receiver, uint256 yield);
+
     function depositCollateral(address _account, uint256 _amount) external;
 
     function withdrawCollateral(address _account, uint256 _amount) external;

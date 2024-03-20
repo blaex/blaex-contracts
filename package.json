@@ -1,8 +1,12 @@
 {
   "name": "blaex-contracts",
   "scripts": {
-    "deploy:market:testnet": "npx hardhat run --network testnet scripts/deploy/deployPerpsMarket.ts",
-    "deploy:market:mainnet": "npx hardhat run --network mainnet scripts/deploy/deployPerpsMarket.ts",
+    "deploy:liquidity:testnet": "npx hardhat run --network testnet scripts/deploy/1_deployLiquidityVault.ts",
+    "deploy:liquidity:mainnet": "npx hardhat run --network mainnet scripts/deploy/1_deployLiquidityVault.ts",
+    "deploy:perps:testnet": "npx hardhat run --network testnet scripts/deploy/2_deployPerpsVault.ts",
+    "deploy:perps:mainnet": "npx hardhat run --network mainnet scripts/deploy/2_deployPerpsVault.ts",
+    "deploy:market:testnet": "npx hardhat run --network testnet scripts/deploy/3_deployPerpsMarket.ts",
+    "deploy:market:mainnet": "npx hardhat run --network mainnet scripts/deploy/3_deployPerpsMarket.ts",
     "compile": "hardhat compile",
     "test": "hardhat test",
     "watch": "hardhat watch"
@@ -35,6 +39,7 @@
     "@openzeppelin/contracts": "4.9.5",
     "@openzeppelin/defender-sdk": "1.8.0",
     "@pythnetwork/pyth-sdk-solidity": "^2.4.0",
+    "@pythnetwork/pyth-evm-js": "1.30.0",
     "@uniswap/v3-core": "1.0.0",
     "base64-sol": "1.1.0",
     "hardhat-watcher": "2.3.0"

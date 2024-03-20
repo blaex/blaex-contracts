@@ -1,10 +1,10 @@
-import { PERPS_MARKET_ADDRESS } from "../../utils/constants";
 import { ethers, network } from "hardhat";
 import { abi as USDB_ABI } from "../../artifacts/contracts/USDB.sol/USDB.json";
 import { abi as PERPS_MARKET_ABI } from "../../artifacts/contracts/exchange/PerpsMarket.sol/PerpsMarket.json";
 import delay from "../../utils/delay";
 import { BlaexNetworkConfig } from "../../utils/types/config";
 import { calculateAcceptablePrice } from "../../utils/trades";
+import { CONFIG } from "../../utils/constants";
 require("dotenv").config();
 
 async function main() {
@@ -13,12 +13,12 @@ async function main() {
   const USDBContract = new ethers.Contract(USDB, USDB_ABI, wallet1 as any);
 
   const PerpsMarketContract = new ethers.Contract(
-    PERPS_MARKET_ADDRESS,
+    CONFIG.PERPS_MARKET,
     PERPS_MARKET_ABI,
     wallet1 as any
   );
 
-  const amount = ethers.utils.parseEther("50");
+  const amount = ethers.utils.parseEther("150");
 
   // {
   //   "internalType": "uint256",
@@ -61,32 +61,30 @@ async function main() {
   //   "type": "bool"
   // }
 
-  enum OrderType {
-    MarketIncrease,
-    LimitIncrease,
-    MarketDecrease,
-    LimitDecrease,
-    Liquidation,
-  }
+  // enum OrderType {
+  //   MarketIncrease,
+  //   LimitIncrease,
+  //   MarketDecrease,
+  //   LimitDecrease,
+  //   Liquidation,
+  // }
 
   // const approvedTx = await USDBContract.approve(
   //   PerpsMarketContract.address,
-  //   amount
+  //   ethers.utils.parseEther("1000")
   // );
   // console.log("approvedTx", approvedTx);
   // await delay(3000);
 
   const price = await PerpsMarketContract.indexPrice(1);
-
   const tx = await PerpsMarketContract.createOrder({
     market: 1,
-    collateralToken: USDB,
     sizeDeltaUsd: amount.mul(20),
     collateralDeltaUsd: amount,
-    triggerPrice: price,
+    triggerPrice: 0,
     acceptablePrice: calculateAcceptablePrice(price, true),
-    orderType: OrderType.MarketIncrease,
     isLong: true,
+    isIncrease: false,
   });
   console.log("tx", tx);
 }

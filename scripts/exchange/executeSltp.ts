@@ -31,7 +31,7 @@ async function main() {
   // call the Pyth Contract with this data.
   const priceUpdateData = await connection.getPriceFeedsUpdateData(priceIds);
 
-  const tx = await PerpsMarketContract.executeOrder(12, priceUpdateData, {
+  const tx = await PerpsMarketContract.executeSltp(1, priceUpdateData, {
     value: 1,
   });
   console.log("tx", tx);

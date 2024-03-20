@@ -45,6 +45,9 @@ const config: HardhatUserConfig = {
       ...{
         USDB: "0x4200000000000000000000000000000000000022",
         BLAST_POINTS: "0x2fc95838c71e76ec69ff817983BFf17c710F34E0",
+        LIQUIDITY_VAULT: "0x909f03AD2fa1b7b351aB84b161a68F49970A56e4",
+        PERPS_VAULT: "0x19d979c24dA579E3fBd5D98c4AeA09901Fa1C7a1",
+        PERPS_MARKET: "0x86D262BF5033Af29EAe1F1F071F4Fda43466fcE6",
       },
     },
     mainnet: {
@@ -57,6 +60,9 @@ const config: HardhatUserConfig = {
       ...{
         USDB: "0x4300000000000000000000000000000000000003",
         BLAST_POINTS: "0x2536FE9ab3F511540F2f9e2eC2A805005C3Dd800",
+        LIQUIDITY_VAULT: "",
+        PERPS_VAULT: "",
+        PERPS_MARKET: "",
       },
     },
   },

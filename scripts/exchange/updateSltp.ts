@@ -1,11 +1,16 @@
 import { ethers, network } from "hardhat";
+import { abi as USDB_ABI } from "../../artifacts/contracts/USDB.sol/USDB.json";
 import { abi as PERPS_MARKET_ABI } from "../../artifacts/contracts/exchange/PerpsMarket.sol/PerpsMarket.json";
 import delay from "../../utils/delay";
+import { BlaexNetworkConfig } from "../../utils/types/config";
+import { calculateAcceptablePrice } from "../../utils/trades";
 import { CONFIG } from "../../utils/constants";
 require("dotenv").config();
 
 async function main() {
   const [wallet1, wallet2] = await ethers.getSigners();
+  const USDB = (network.config as BlaexNetworkConfig).USDB;
+  const USDBContract = new ethers.Contract(USDB, USDB_ABI, wallet1 as any);
 
   const PerpsMarketContract = new ethers.Contract(
     CONFIG.PERPS_MARKET,
@@ -13,16 +18,12 @@ async function main() {
     wallet1 as any
   );
 
-  const ethPriceFeedId =
-    "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
-
-  const tx = await PerpsMarketContract.createMarket({
-    id: 1,
-    symbol: "ETH",
-    priceFeedId: ethPriceFeedId,
-    // maxSkew: ethers.utils.parseEther("1000"),
-    maxSkew: 1,
-  });
+  const price = await PerpsMarketContract.indexPrice(1);
+  const tx = await PerpsMarketContract.updateSltp(
+    1,
+    price.sub(1),
+    price.add(1)
+  );
   console.log("tx", tx);
 }
 

@@ -22,6 +22,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
     IPerpsVault public immutable PERPS_VAULT;
 
     uint256 public minCollateral = 10 * 1e18;
+    uint256 public maxCollateral = 2000 * 1e18;
     uint256 public maxLeverage = 50;
     uint256 public keeperFee = 1 * 1e18;
     uint256 public orderFee = 5;
@@ -37,11 +38,11 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
     mapping(bytes32 => uint256) openingPositionFlag;
 
     constructor(
+        address _perpsVault,
         address _usdb,
         address _blastPoints,
-        address _owner,
-        address _perpsVault,
-        address _pyth
+        address _pyth,
+        address _owner
     ) {
         USDB = IERC20(_usdb);
         PERPS_VAULT = IPerpsVault(_perpsVault);
@@ -118,11 +119,16 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
                 "Under min collateral"
             );
 
-            if (market.maxSkew != 0) {
-                PythStructs.Price memory price = PYTH.getPriceUnsafe(
-                    market.priceFeedId
+            if (maxCollateral != 0) {
+                require(
+                    position.collateralInUsd + params.collateralDeltaUsd <=
+                        maxCollateral,
+                    "Over max collateral"
                 );
-                uint256 currentPrice = _convertToUint(price, 18);
+            }
+
+            if (market.maxSkew != 0 && market.skew != 0) {
+                uint256 currentPrice = _indexPrice(market);
                 int256 sizeInToken = int256(
                     (params.sizeDeltaUsd * 1e18) / currentPrice
                 );
@@ -133,7 +139,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
                             Math.abs(market.skew + sizeInToken) <=
                             market.maxSkew)
                         : (params.isLong ||
-                            Math.abs(market.skew + sizeInToken) <=
+                            Math.abs(market.skew - sizeInToken) <=
                             market.maxSkew),
                     "Over max market skew"
                 );
@@ -145,7 +151,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
                 leverage <= maxLeverage && leverage >= 1,
                 "Leverage invalid"
             );
-        } else {
+        } else if (position.collateralInUsd > params.collateralDeltaUsd) {
             require(
                 (position.sizeInUsd - params.sizeDeltaUsd) /
                     (position.collateralInUsd - params.collateralDeltaUsd) <=
@@ -156,7 +162,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
 
         uint256 orderFees = (params.sizeDeltaUsd * orderFee) / FACTOR;
 
-        Order memory order;
+        Order storage order = orders[orderId];
         order.account = msg.sender;
         order.market = params.market;
         order.sizeDeltaUsd = params.sizeDeltaUsd;
@@ -201,14 +207,16 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         Order memory order = _verifyPendingOrder(_id);
 
         PYTH.updatePriceFeeds{value: msg.value}(_priceUpdateData);
-        (uint256 currentPrice, uint256 executionTime) = getPrice(order.market);
+        (uint256 currentPrice, uint256 executionTime) = getExecutionPrice(
+            order.market
+        );
 
         require(executionTime > order.submissionTime, "not yet");
         if (
             order.triggerPrice == 0 &&
             block.timestamp - order.submissionTime > 60
         ) {
-            _cancelOrder(_id, order, "MANUAL");
+            _cancelOrder(_id, order, "EXPIRED");
             if (order.executionFees > 0) {
                 USDB.transferFrom(
                     order.account,
@@ -219,9 +227,11 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
             }
             return;
         }
+
+        bool sign = order.isIncrease ? order.isLong : !order.isLong;
         require(
-            (order.isLong && currentPrice <= order.acceptablePrice) ||
-                (!order.isLong && currentPrice >= order.acceptablePrice),
+            (sign && currentPrice <= order.acceptablePrice) ||
+                (!sign && currentPrice >= order.acceptablePrice),
             "Cannot fill order"
         );
 
@@ -264,7 +274,10 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         );
     }
 
-    function liquidate(uint256 _positionId) external nonReentrant {
+    function liquidate(
+        uint256 _positionId,
+        bytes[] calldata _priceUpdateData
+    ) external payable nonReentrant {
         Position storage position = positions[_positionId];
         require(position.id > 0, "No position found");
         require(!position.isClose, "Position is close");
@@ -272,12 +285,14 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
 
         Market storage market = markets[position.market];
 
+        PYTH.updatePriceFeeds{value: msg.value}(_priceUpdateData);
+
         (
             uint256 collateralInUsd,
             ,
             int256 positionPnl,
             int256 fundingPnl
-        ) = calculatePosition(position.id);
+        ) = calculatePosition(position.id, false);
 
         uint256 totalPnl = Math.abs(positionPnl + fundingPnl);
 
@@ -391,10 +406,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         require(position.account == msg.sender, "Unauthorized");
         require(!position.isClose, "Position has been closed");
         Market memory market = markets[position.market];
-        PythStructs.Price memory price = PYTH.getPriceUnsafe(
-            market.priceFeedId
-        );
-        uint256 currentPrice = _convertToUint(price, 18);
+        uint256 currentPrice = _indexPrice(market);
         require(
             _tp == 0 ||
                 (position.isLong ? _tp > currentPrice : _tp < currentPrice),
@@ -407,6 +419,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         );
         position.sl = _sl;
         position.tp = _tp;
+        emit SltpUpdated(_positionId, _sl, _tp);
     }
 
     function executeSltp(
@@ -418,7 +431,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         require(!position.isClose, "Position has been closed");
         require(position.tp != 0 || position.sl != 0, "Need SL / TP");
         PYTH.updatePriceFeeds{value: msg.value}(_priceUpdateData);
-        (uint256 currentPrice, uint256 executionTime) = getPrice(
+        (uint256 currentPrice, uint256 executionTime) = getExecutionPrice(
             position.market
         );
 
@@ -471,7 +484,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
     // Getters
     // =====================================================================
 
-    function getPrice(
+    function getExecutionPrice(
         uint256 _marketId
     ) public view returns (uint256 currentPrice, uint256 executionTime) {
         Market memory market = markets[_marketId];
@@ -480,8 +493,17 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         executionTime = price.publishTime;
     }
 
+    function indexPrice(
+        uint256 _marketId
+    ) public view returns (uint256 currentPrice) {
+        Market memory market = markets[_marketId];
+        require(market.id != 0, "Market is not exist");
+        return _indexPrice(market);
+    }
+
     function calculatePosition(
-        uint256 _positionId
+        uint256 _positionId,
+        bool _unsafe
     )
         public
         view
@@ -494,7 +516,12 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
     {
         Position memory position = positions[_positionId];
         Market memory market = markets[position.market];
-        (uint256 currentPrice, ) = getPrice(position.market);
+        uint256 currentPrice;
+        if (_unsafe) {
+            currentPrice = _indexPrice(market);
+        } else {
+            (currentPrice, ) = getExecutionPrice(position.market);
+        }
 
         collateralInUsd = position.collateralInUsd;
         sizeInUsd = (position.sizeInToken * currentPrice) / 10 ** 18;
@@ -510,7 +537,7 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
             ,
             int256 positionPnl,
             int256 fundingPnl
-        ) = calculatePosition(_positionId);
+        ) = calculatePosition(_positionId, true);
 
         uint256 totalPnl = Math.abs(positionPnl + fundingPnl);
         return
@@ -560,29 +587,50 @@ contract PerpsMarket is IPerpsMarket, Authorization, ReentrancyGuard {
         uint256 _keeperFee
     ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
         keeperFee = _keeperFee;
+        emit KeeperFeeChanged(keeperFee);
     }
 
-    function setProtocolFee(
+    function setOrderFee(
         uint256 _orderFee
     ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
         orderFee = _orderFee;
+        emit OrderFeeChanged(orderFee);
     }
 
     function setMinCollateral(
         uint256 _minCollateral
     ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
+        require(minCollateral >= 10 * 1e18, "Invalid amount");
         minCollateral = _minCollateral;
+        emit MinCollateralChanged(minCollateral);
+    }
+
+    function setMaxCollateral(
+        uint256 _maxCollateral
+    ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
+        maxCollateral = _maxCollateral;
+        emit MaxCollateralChanged(maxCollateral);
     }
 
     function setMaxLeverage(
         uint256 _maxLeverage
     ) external auth(CONTRACT_OWNER_ROLE, msg.sender) {
         maxLeverage = _maxLeverage;
+        emit MaxLeverageChanged(maxLeverage);
     }
 
     // =====================================================================
     // Internal functions
     // =====================================================================
+
+    function _indexPrice(
+        Market memory market
+    ) public view returns (uint256 currentPrice) {
+        PythStructs.Price memory price = PYTH.getPriceUnsafe(
+            market.priceFeedId
+        );
+        currentPrice = _convertToUint(price, 18);
+    }
 
     function _increasePosition(
         bytes32 positionKey,
